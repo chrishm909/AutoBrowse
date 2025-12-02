@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "AutoBrowse",
+  "version": "1.0.0",
+  "description": "Build and manage browser automations for your favorite websites",
+  "permissions": [
+    "activeTab",
+    "tabs",
+    "storage"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AutoBrowse"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["executor.js", "content.js"]
+    }
+  ],
+  "options_page": "options.html"
+}

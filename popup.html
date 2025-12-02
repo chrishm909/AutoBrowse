@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AutoBrowse</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>AutoBrowse</h1>
+      <p class="subtitle">Automation Manager</p>
+    </div>
+    
+    <div class="current-page-section">
+      <div class="current-page-info">
+        <div class="page-icon">🌐</div>
+        <div class="page-details">
+          <div class="page-title" id="pageTitle">Current Page</div>
+          <div class="page-url" id="pageUrl">Loading...</div>
+        </div>
+      </div>
+      <button id="addAutomationBtn" class="btn btn-primary">+ Create Automation</button>
+    </div>
+    
+    <div class="divider"></div>
+    
+    <div class="section-header">
+      <h2>My Automations</h2>
+      <button id="openOptionsBtn" class="btn-icon" title="Manage All">⚙️</button>
+    </div>
+    
+    <div id="automationList" class="automation-list"></div>
+    
+    <div class="status" id="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
