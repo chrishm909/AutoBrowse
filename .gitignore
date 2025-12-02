@@ -1,0 +1,10 @@
+# ignore OS junk
+.DS_Store
+Thumbs.db
+
+# ignore node modules if you ever use them
+node_modules/
+
+# ignore packaged Chrome extension builds
+*.crx
+*.pem
