@@ -188,6 +188,9 @@ class AutomationExecutor {
           <div style="font-size: 12px; color: #666; padding: 8px; background: #f5f5f5; border-radius: 6px; word-break: break-all;">
             Target: ${step.target || 'page'}
           </div>
+          <div style="font-size: 11px; color: #999; margin-top: 8px; text-align: center;">
+            Press <strong>Space</strong> or <strong>Enter</strong> to execute
+          </div>
         </div>
         <div style="display: flex; gap: 8px;">
           <button id="step-cancel" style="flex: 1; padding: 8px 16px; border: 1px solid #dc3545; background: white; color: #dc3545; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;">
@@ -205,16 +208,35 @@ class AutomationExecutor {
       const executeBtn = this.stepControlUI.querySelector('#step-execute');
       const cancelBtn = this.stepControlUI.querySelector('#step-cancel');
       
-      executeBtn.addEventListener('click', () => {
+      const executeStep = () => {
         this.removeStepControl();
+        document.removeEventListener('keydown', keydownHandler);
         resolve();
-      });
+      };
       
-      cancelBtn.addEventListener('click', () => {
+      const cancelStep = () => {
         this.removeStepControl();
         this.removeHighlight();
+        document.removeEventListener('keydown', keydownHandler);
         reject(new Error('Cancelled by user'));
-      });
+      };
+      
+      // Keyboard handler for Space and Enter
+      const keydownHandler = (e) => {
+        if (e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          executeStep();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          cancelStep();
+        }
+      };
+      
+      executeBtn.addEventListener('click', executeStep);
+      cancelBtn.addEventListener('click', cancelStep);
+      document.addEventListener('keydown', keydownHandler, true);
       
       // Focus the execute button
       executeBtn.focus();

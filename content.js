@@ -106,7 +106,8 @@ function createFloatingUI() {
       <button id="add-step-btn" class="panel-btn" style="margin-top: 12px;">+ Add Step</button>
       <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #e0e0e0; display: flex; gap: 8px;">
         <button id="save-automation-btn" class="panel-btn primary" style="flex: 1;">💾 Save</button>
-        <button id="test-automation-btn" class="panel-btn" style="flex: 1;">▶️ Test Run</button>
+        <button id="run-automation-btn" class="panel-btn" style="flex: 1; background: #2c2c2c; color: white;">▶️ Run</button>
+        <button id="test-automation-btn" class="panel-btn" style="flex: 1; background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; font-weight: 500; box-shadow: 0 2px 4px rgba(40, 167, 69, 0.2);">🧪 Test</button>
       </div>
       <div id="execution-log"></div>
     </div>
@@ -368,6 +369,23 @@ function createFloatingUI() {
       display: flex;
       gap: 8px;
       margin-left: 12px;
+    }
+    
+    .automation-test-btn {
+      padding: 3px 8px;
+      background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      box-shadow: 0 2px 4px rgba(40, 167, 69, 0.2);
+    }
+    
+    .automation-test-btn:hover {
+      opacity: 0.85;
     }
     
     .automation-run-btn {
@@ -803,6 +821,7 @@ function createFloatingUI() {
   document.getElementById('back-to-list').addEventListener('click', showAutomationList);
   document.getElementById('add-step-btn').addEventListener('click', addStep);
   document.getElementById('save-automation-btn').addEventListener('click', saveCurrentAutomation);
+  document.getElementById('run-automation-btn').addEventListener('click', runCurrentAutomation);
   document.getElementById('test-automation-btn').addEventListener('click', testCurrentAutomation);
   document.getElementById('parameters-toggle').addEventListener('click', toggleParametersSection);
   document.getElementById('add-parameter-btn').addEventListener('click', addParameter);
@@ -880,7 +899,7 @@ function displayAutomationList(automations) {
     item.innerHTML = `
       <div class="automation-name">${automation.name || 'Unnamed Automation'}</div>
       <div class="automation-actions">
-        <button class="automation-test-btn" data-id="${automation.id}" style="background: #28a745; margin-right: 4px;">🧪 Test</button>
+        <button class="automation-test-btn" data-id="${automation.id}">🧪 Test</button>
         <button class="automation-run-btn" data-id="${automation.id}">▶️ Run</button>
       </div>
     `;
@@ -1537,6 +1556,18 @@ function testCurrentAutomation() {
   // Then run in test mode
   setTimeout(() => {
     runAutomation(currentEditingAutomation, true); // true = test mode
+  }, 500);
+}
+
+function runCurrentAutomation() {
+  if (!currentEditingAutomation) return;
+  
+  // Save first
+  saveCurrentAutomation(true); // silent save
+  
+  // Then run in normal mode
+  setTimeout(() => {
+    runAutomation(currentEditingAutomation, false); // false = normal mode
   }, 500);
 }
 
