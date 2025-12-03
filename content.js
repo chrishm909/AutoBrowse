@@ -1072,13 +1072,28 @@ function showAutomationList() {
           action: stepEl.querySelector('.action').value,
           retryCount: parseInt(stepEl.querySelector('.retry-count').value) || 0,
           retryDelay: parseInt(stepEl.querySelector('.retry-delay').value) || 1000,
-          waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0
+          waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0,
+          waitForNetwork: stepEl.querySelector('.wait-for-network').checked
         };
         
         // Always save value field if it exists (preserve it even when action changes)
         const valueInput = stepEl.querySelector('.value');
         if (valueInput) {
           step.value = valueInput.value || '';
+        }
+        
+        // Save all generated selectors if they exist
+        if (stepEl.dataset.selectorAuto) {
+          step.selectors = {
+            auto: stepEl.dataset.selectorAuto || '',
+            querySelector: stepEl.dataset.selectorQuerySelector || '',
+            xpath: stepEl.dataset.selectorXpath || '',
+            text: stepEl.dataset.selectorText || '',
+            position: stepEl.dataset.selectorPosition || '',
+            id: stepEl.dataset.selectorId || '',
+            class: stepEl.dataset.selectorClass || '',
+            attribute: stepEl.dataset.selectorAttribute || ''
+          };
         }
         
         currentEditingAutomation.steps[index] = step;
@@ -1186,6 +1201,18 @@ function createStepElement(step, index) {
   stepDiv.className = 'step-item';
   stepDiv.dataset.index = index;
   
+  // Restore stored selectors if they exist
+  if (step.selectors) {
+    stepDiv.dataset.selectorAuto = step.selectors.auto || '';
+    stepDiv.dataset.selectorQuerySelector = step.selectors.querySelector || '';
+    stepDiv.dataset.selectorXpath = step.selectors.xpath || '';
+    stepDiv.dataset.selectorText = step.selectors.text || '';
+    stepDiv.dataset.selectorPosition = step.selectors.position || '';
+    stepDiv.dataset.selectorId = step.selectors.id || '';
+    stepDiv.dataset.selectorClass = step.selectors.class || '';
+    stepDiv.dataset.selectorAttribute = step.selectors.attribute || '';
+  }
+  
   const actionText = step.action || 'click';
   const targetText = step.target || 'no target';
   const truncatedTarget = targetText.length > 20 ? targetText.substring(0, 20) + '...' : targetText;
@@ -1210,6 +1237,10 @@ function createStepElement(step, index) {
       </div>
     </div>
     <div class="step-fields">
+      <div class="step-field" style="display: flex; align-items: center; gap: 8px; width: fit-content;">
+        <input type="checkbox" class="wait-for-network" id="wait-network-${index}" ${step.waitForNetwork ? 'checked' : ''} style="width: 16px; height: 16px; margin: 0;">
+        <label for="wait-network-${index}" style="margin: 0; cursor: pointer;">Fetch await</label>
+      </div>
       <div class="step-field">
         <label>Wait Before (ms)</label>
         <input type="number" class="wait-before" value="${step.waitBefore || 0}" min="0" step="100">
@@ -1228,6 +1259,7 @@ function createStepElement(step, index) {
           <option value="querySelector" ${step.selectorMethod === 'querySelector' ? 'selected' : ''}>CSS Selector</option>
           <option value="xpath" ${step.selectorMethod === 'xpath' ? 'selected' : ''}>XPath</option>
           <option value="text" ${step.selectorMethod === 'text' ? 'selected' : ''}>Text Content</option>
+          <option value="position" ${step.selectorMethod === 'position' ? 'selected' : ''}>Position</option>
           <option value="id" ${step.selectorMethod === 'id' ? 'selected' : ''}>ID (partial)</option>
           <option value="class" ${step.selectorMethod === 'class' ? 'selected' : ''}>Class (partial)</option>
           <option value="attribute" ${step.selectorMethod === 'attribute' ? 'selected' : ''}>Attribute</option>
@@ -1312,6 +1344,7 @@ function createStepElement(step, index) {
   const actionSelect = stepDiv.querySelector('.action');
   const targetInput = stepDiv.querySelector('.target');
   const valueField = stepDiv.querySelector('.value-field');
+  const selectorMethodSelect = stepDiv.querySelector('.selector-method');
   
   actionSelect.addEventListener('change', () => {
     updateStepSummary(stepDiv, actionSelect.value, targetInput.value);
@@ -1323,6 +1356,18 @@ function createStepElement(step, index) {
   
   targetInput.addEventListener('input', () => {
     updateStepSummary(stepDiv, actionSelect.value, targetInput.value);
+  });
+  
+  // When selector method changes, update the target field with the appropriate selector
+  selectorMethodSelect.addEventListener('change', () => {
+    const method = selectorMethodSelect.value;
+    const selectorKey = `selector${method.charAt(0).toUpperCase() + method.slice(1)}`;
+    
+    // Check if we have a stored selector for this method
+    if (stepDiv.dataset[selectorKey]) {
+      targetInput.value = stepDiv.dataset[selectorKey];
+      updateStepSummary(stepDiv, actionSelect.value, targetInput.value);
+    }
   });
   
   return stepDiv;
@@ -1498,13 +1543,28 @@ function saveCurrentAutomation(silent = false) {
       action: stepEl.querySelector('.action').value,
       retryCount: parseInt(stepEl.querySelector('.retry-count').value) || 0,
       retryDelay: parseInt(stepEl.querySelector('.retry-delay').value) || 1000,
-      waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0
+      waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0,
+      waitForNetwork: stepEl.querySelector('.wait-for-network').checked
     };
     
     // Always save value field if it exists (preserve it even when action changes)
     const valueInput = stepEl.querySelector('.value');
     if (valueInput) {
       step.value = valueInput.value || '';
+    }
+    
+    // Save all generated selectors if they exist
+    if (stepEl.dataset.selectorAuto) {
+      step.selectors = {
+        auto: stepEl.dataset.selectorAuto || '',
+        querySelector: stepEl.dataset.selectorQuerySelector || '',
+        xpath: stepEl.dataset.selectorXpath || '',
+        text: stepEl.dataset.selectorText || '',
+        position: stepEl.dataset.selectorPosition || '',
+        id: stepEl.dataset.selectorId || '',
+        class: stepEl.dataset.selectorClass || '',
+        attribute: stepEl.dataset.selectorAttribute || ''
+      };
     }
     
     currentEditingAutomation.steps.push(step);
@@ -1724,19 +1784,25 @@ function showParameterPopup(automation, callback) {
   // Focus first input
   setTimeout(() => {
     const firstInput = popupContent.querySelector('.param-input');
-    if (firstInput) firstInput.focus();
+    if (firstInput) {
+      firstInput.focus();
+      // Select all text so user can immediately start typing to replace it
+      firstInput.select();
+    }
   }, 100);
   
-  // Allow Enter to submit
+  // Allow Enter to submit from anywhere in the popup (including input fields)
   popupContent.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
+      e.stopPropagation();
       document.getElementById('param-submit').click();
     } else if (e.key === 'Escape') {
       e.preventDefault();
+      e.stopPropagation();
       document.getElementById('param-cancel').click();
     }
-  });
+  }, true); // Use capture phase to catch events before they reach inputs
 }
 
 function addLogEntry(type, message, isError) {
@@ -1948,15 +2014,30 @@ function handlePickerClick(e) {
   const element = currentPickerElement || getElementUnderCursor(e);
   if (!element) return;
   
-  // Generate and set selector
-  const selector = generateSelector(element);
+  // Generate selectors for all strategies
+  const selectors = generateAllSelectors(element);
+  
   if (currentPickerStep) {
     const targetInput = currentPickerStep.querySelector('.target');
-    targetInput.value = selector;
+    const selectorMethodSelect = currentPickerStep.querySelector('.selector-method');
+    
+    // Store all selectors as data attributes on the step
+    currentPickerStep.dataset.selectorAuto = selectors.auto;
+    currentPickerStep.dataset.selectorQuerySelector = selectors.querySelector;
+    currentPickerStep.dataset.selectorXpath = selectors.xpath;
+    currentPickerStep.dataset.selectorText = selectors.text;
+    currentPickerStep.dataset.selectorPosition = selectors.position;
+    currentPickerStep.dataset.selectorId = selectors.id;
+    currentPickerStep.dataset.selectorClass = selectors.class;
+    currentPickerStep.dataset.selectorAttribute = selectors.attribute;
+    
+    // Set the target input to the current strategy's selector
+    const currentMethod = selectorMethodSelect.value || 'auto';
+    targetInput.value = selectors[currentMethod] || selectors.auto;
     
     // Update summary
     const actionSelect = currentPickerStep.querySelector('.action');
-    updateStepSummary(currentPickerStep, actionSelect.value, selector);
+    updateStepSummary(currentPickerStep, actionSelect.value, targetInput.value);
   }
   
   stopElementPicker();
@@ -2094,6 +2175,120 @@ function generateSelector(element) {
   }
   
   return path.join(' > ');
+}
+
+function generateAllSelectors(element) {
+  const selectors = {
+    auto: '',
+    querySelector: '',
+    xpath: '',
+    text: '',
+    position: '',
+    id: '',
+    class: '',
+    attribute: ''
+  };
+  
+  // 1. Auto / CSS Selector (default CSS strategy)
+  selectors.auto = generateSelector(element);
+  selectors.querySelector = selectors.auto;
+  
+  // 2. XPath - Generate XPath expression
+  const getXPath = (el) => {
+    if (el.id) {
+      return `//*[@id="${el.id}"]`;
+    }
+    const parts = [];
+    let current = el;
+    while (current && current !== document.body) {
+      let index = 1;
+      let sibling = current.previousElementSibling;
+      while (sibling) {
+        if (sibling.tagName === current.tagName) index++;
+        sibling = sibling.previousElementSibling;
+      }
+      const tagName = current.tagName.toLowerCase();
+      const part = index > 1 ? `${tagName}[${index}]` : tagName;
+      parts.unshift(part);
+      current = current.parentElement;
+    }
+    return '//' + parts.join('/');
+  };
+  selectors.xpath = getXPath(element);
+  
+  // 3. Text Content - Get visible text
+  const text = element.textContent?.trim() || element.innerText?.trim() || element.value || '';
+  // Use first 50 chars if too long
+  selectors.text = text.length > 50 ? text.substring(0, 50) : text;
+  
+  // 4. Position - Pure DOM structure with nth-of-type (no IDs or classes)
+  const getPositionSelector = (el) => {
+    const path = [];
+    let current = el;
+    while (current && current !== document.body && current !== document.documentElement) {
+      const parent = current.parentElement;
+      if (!parent) break;
+      
+      const tagName = current.tagName.toLowerCase();
+      
+      // Count siblings of the same type
+      const siblings = Array.from(parent.children).filter(child => 
+        child.tagName.toLowerCase() === tagName
+      );
+      
+      if (siblings.length > 1) {
+        const index = siblings.indexOf(current) + 1;
+        path.unshift(`${tagName}:nth-of-type(${index})`);
+      } else {
+        path.unshift(tagName);
+      }
+      
+      current = parent;
+    }
+    return path.length > 0 ? path.join(' > ') : tagName;
+  };
+  selectors.position = getPositionSelector(element);
+  
+  // 5. ID (partial) - Use full ID or partial
+  if (element.id) {
+    selectors.id = element.id;
+  } else {
+    selectors.id = selectors.auto; // fallback to CSS
+  }
+  
+  // 6. Class (partial) - Use first class or all classes
+  if (element.className && typeof element.className === 'string') {
+    const classes = element.className.trim().split(/\s+/).filter(c => c);
+    if (classes.length > 0) {
+      selectors.class = classes[0]; // Use first class for partial matching
+    } else {
+      selectors.class = selectors.auto;
+    }
+  } else {
+    selectors.class = selectors.auto;
+  }
+  
+  // 7. Attribute - Find best attribute
+  const bestAttribute = (() => {
+    // Priority: data-testid, data-test, id, name, aria-label, type
+    const attrPriority = ['data-testid', 'data-test', 'data-id', 'name', 'aria-label', 'type', 'role', 'title'];
+    for (const attr of attrPriority) {
+      if (element.hasAttribute(attr)) {
+        const value = element.getAttribute(attr);
+        return `[${attr}="${value}"]`;
+      }
+    }
+    // Fallback: use any data- attribute
+    for (const attr of element.attributes) {
+      if (attr.name.startsWith('data-')) {
+        return `[${attr.name}="${attr.value}"]`;
+      }
+    }
+    return null;
+  })();
+  selectors.attribute = bestAttribute || selectors.auto;
+  
+  return selectors;
 }
 
 // Listen for keybinds and run automation

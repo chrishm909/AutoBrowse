@@ -12,6 +12,84 @@ class AutomationExecutor {
     this.highlightBox = null;
     this.stepControlUI = null;
     this.continueExecution = null;
+    this.activeRequests = 0;
+    this.setupNetworkMonitoring();
+  }
+
+  /**
+   * Setup network activity monitoring
+   */
+  setupNetworkMonitoring() {
+    // Monitor fetch requests
+    const originalFetch = window.fetch;
+    window.fetch = async (...args) => {
+      this.activeRequests++;
+      try {
+        const response = await originalFetch.apply(window, args);
+        return response;
+      } finally {
+        this.activeRequests--;
+      }
+    };
+
+    // Monitor XMLHttpRequest
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    
+    XMLHttpRequest.prototype.open = function(...args) {
+      this._url = args[1];
+      return originalOpen.apply(this, args);
+    };
+    
+    XMLHttpRequest.prototype.send = function(...args) {
+      const executor = window.automationExecutor;
+      if (executor) executor.activeRequests++;
+      
+      this.addEventListener('loadend', () => {
+        if (executor) executor.activeRequests--;
+      });
+      
+      return originalSend.apply(this, args);
+    };
+  }
+
+  /**
+   * Wait for network to become idle (no active requests)
+   * @param {number} timeout - Maximum time to wait in ms (default 30000)
+   * @param {number} idleTime - Time with no requests to consider idle in ms (default 500)
+   */
+  async waitForNetworkIdle(timeout = 30000, idleTime = 500) {
+    const startTime = Date.now();
+    
+    return new Promise((resolve, reject) => {
+      const checkIdle = () => {
+        // Check timeout
+        if (Date.now() - startTime > timeout) {
+          console.warn('Network idle timeout reached, continuing anyway');
+          resolve();
+          return;
+        }
+        
+        // If no active requests, wait for idleTime to confirm stability
+        if (this.activeRequests === 0) {
+          setTimeout(() => {
+            // Double check after idle period
+            if (this.activeRequests === 0) {
+              console.log('Network is idle, continuing');
+              resolve();
+            } else {
+              // New requests started, keep waiting
+              setTimeout(checkIdle, 100);
+            }
+          }, idleTime);
+        } else {
+          // Still have active requests, check again soon
+          setTimeout(checkIdle, 100);
+        }
+      };
+      
+      checkIdle();
+    });
   }
 
   /**
@@ -327,6 +405,12 @@ class AutomationExecutor {
     
     for (let attempt = 0; attempt <= retryCount; attempt++) {
       try {
+        // Wait for network to be idle if requested
+        if (step.waitForNetwork) {
+          console.log(`Step ${stepNumber}: Waiting for network to be idle...`);
+          await this.waitForNetworkIdle();
+        }
+        
         // Wait before execution
         if (step.waitBefore > 0) {
           await this.wait(step.waitBefore);
@@ -457,6 +541,19 @@ class AutomationExecutor {
             usedMethod = 'text content';
             console.log(`Found element using ${usedMethod}:`, selector);
             return element;
+          }
+          break;
+
+        case 'position':
+          try {
+            element = document.querySelector(selector);
+            if (element) {
+              usedMethod = 'position selector';
+              console.log(`Found element using ${usedMethod}:`, selector);
+              return element;
+            }
+          } catch (e) {
+            console.warn(`Position selector failed for "${selector}":`, e.message);
           }
           break;
 
