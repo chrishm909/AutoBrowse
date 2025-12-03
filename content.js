@@ -1046,12 +1046,23 @@ function showAutomationList() {
     const stepElements = document.querySelectorAll('.step-item');
     stepElements.forEach((stepEl, index) => {
       if (currentEditingAutomation.steps[index]) {
-        currentEditingAutomation.steps[index] = {
+        const step = {
           waitBefore: parseInt(stepEl.querySelector('.wait-before').value) || 0,
           target: stepEl.querySelector('.target').value,
+          selectorMethod: stepEl.querySelector('.selector-method').value,
           action: stepEl.querySelector('.action').value,
+          retryCount: parseInt(stepEl.querySelector('.retry-count').value) || 0,
+          retryDelay: parseInt(stepEl.querySelector('.retry-delay').value) || 1000,
           waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0
         };
+        
+        // Always save value field if it exists (preserve it even when action changes)
+        const valueInput = stepEl.querySelector('.value');
+        if (valueInput) {
+          step.value = valueInput.value || '';
+        }
+        
+        currentEditingAutomation.steps[index] = step;
       }
     });
     
@@ -1322,7 +1333,11 @@ function addStep() {
   const newStep = {
     waitBefore: 0,
     target: '',
+    selectorMethod: 'auto',
     action: 'click',
+    value: '',
+    retryCount: 0,
+    retryDelay: 1000,
     waitAfter: 0
   };
   
@@ -1467,10 +1482,10 @@ function saveCurrentAutomation(silent = false) {
       waitAfter: parseInt(stepEl.querySelector('.wait-after').value) || 0
     };
     
-    // Add value field for input action
+    // Always save value field if it exists (preserve it even when action changes)
     const valueInput = stepEl.querySelector('.value');
-    if (valueInput && step.action === 'input') {
-      step.value = valueInput.value;
+    if (valueInput) {
+      step.value = valueInput.value || '';
     }
     
     currentEditingAutomation.steps.push(step);
