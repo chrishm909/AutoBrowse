@@ -557,6 +557,15 @@ class AutomationExecutor {
           }
           break;
 
+        case 'coordinates':
+          // Selector format: "x,y"
+          const coords = selector.split(',').map(n => parseInt(n.trim()));
+          if (coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
+            // Return a special object indicating coordinate-based clicking
+            return { isCoordinateClick: true, x: coords[0], y: coords[1] };
+          }
+          throw new Error(`Invalid coordinates format: ${selector}`);
+
         case 'id':
           element = this.findByPartialId(selector);
           if (element) {
@@ -696,18 +705,57 @@ class AutomationExecutor {
    * Find element by text content
    */
   findByTextContent(text) {
-    const elements = document.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input[type="submit"], input[type="button"]');
-    for (const el of elements) {
-      if (el.textContent.trim() === text || el.value === text || el.innerText.trim() === text) {
+    // Priority 1: Exact match on highly clickable elements
+    const clickableSelectors = 'button, a, input[type="submit"], input[type="button"]';
+    let clickableElements = document.querySelectorAll(clickableSelectors);
+    
+    for (const el of clickableElements) {
+      // Check direct text content (excluding nested elements)
+      const clone = el.cloneNode(true);
+      Array.from(clone.children).forEach(child => child.remove());
+      const directText = clone.textContent?.trim() || '';
+      
+      if (directText === text || el.textContent.trim() === text || el.value === text || el.innerText.trim() === text) {
         return el;
       }
     }
-    // Try partial match
-    for (const el of elements) {
-      if (el.textContent.includes(text) || el.innerText.includes(text)) {
+    
+    // Priority 2: Exact match on other interactive elements
+    const interactiveSelectors = 'label, span[onclick], div[onclick], span[role="button"], div[role="button"]';
+    let interactiveElements = document.querySelectorAll(interactiveSelectors);
+    
+    for (const el of interactiveElements) {
+      if (el.textContent.trim() === text || el.innerText.trim() === text) {
         return el;
       }
     }
+    
+    // Priority 3: Partial match on clickable elements (for truncated text)
+    for (const el of clickableElements) {
+      if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
+        return el;
+      }
+    }
+    
+    // Priority 4: Broader search with partial match
+    const allElements = document.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
+    for (const el of allElements) {
+      const elementText = el.textContent.trim();
+      const innerText = el.innerText?.trim() || '';
+      
+      // Exact match
+      if (elementText === text || innerText === text || el.value === text) {
+        return el;
+      }
+    }
+    
+    // Priority 5: Partial match as last resort (must start with the text)
+    for (const el of allElements) {
+      if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
+        return el;
+      }
+    }
+    
     return null;
   }
 
@@ -746,6 +794,27 @@ class AutomationExecutor {
   async clickElement(selector, stepNumber, method = 'auto') {
     try {
       const element = this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a coordinate-based click
+      if (element && element.isCoordinateClick) {
+        console.log(`Clicking at coordinates: (${element.x}, ${element.y})`);
+        const clickEvent = new MouseEvent('click', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: element.x,
+          clientY: element.y
+        });
+        // Find element at coordinates and click it
+        const targetElement = document.elementFromPoint(element.x, element.y);
+        if (targetElement) {
+          targetElement.dispatchEvent(clickEvent);
+          targetElement.click();
+        } else {
+          throw new Error(`No element found at coordinates (${element.x}, ${element.y})`);
+        }
+        return;
+      }
       
       // Scroll element into view
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });

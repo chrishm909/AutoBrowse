@@ -1090,6 +1090,7 @@ function showAutomationList() {
             xpath: stepEl.dataset.selectorXpath || '',
             text: stepEl.dataset.selectorText || '',
             position: stepEl.dataset.selectorPosition || '',
+            coordinates: stepEl.dataset.selectorCoordinates || '',
             id: stepEl.dataset.selectorId || '',
             class: stepEl.dataset.selectorClass || '',
             attribute: stepEl.dataset.selectorAttribute || ''
@@ -1208,6 +1209,7 @@ function createStepElement(step, index) {
     stepDiv.dataset.selectorXpath = step.selectors.xpath || '';
     stepDiv.dataset.selectorText = step.selectors.text || '';
     stepDiv.dataset.selectorPosition = step.selectors.position || '';
+    stepDiv.dataset.selectorCoordinates = step.selectors.coordinates || '';
     stepDiv.dataset.selectorId = step.selectors.id || '';
     stepDiv.dataset.selectorClass = step.selectors.class || '';
     stepDiv.dataset.selectorAttribute = step.selectors.attribute || '';
@@ -1260,6 +1262,7 @@ function createStepElement(step, index) {
           <option value="xpath" ${step.selectorMethod === 'xpath' ? 'selected' : ''}>XPath</option>
           <option value="text" ${step.selectorMethod === 'text' ? 'selected' : ''}>Text Content</option>
           <option value="position" ${step.selectorMethod === 'position' ? 'selected' : ''}>Position</option>
+          <option value="coordinates" ${step.selectorMethod === 'coordinates' ? 'selected' : ''}>Coordinates (x,y)</option>
           <option value="id" ${step.selectorMethod === 'id' ? 'selected' : ''}>ID (partial)</option>
           <option value="class" ${step.selectorMethod === 'class' ? 'selected' : ''}>Class (partial)</option>
           <option value="attribute" ${step.selectorMethod === 'attribute' ? 'selected' : ''}>Attribute</option>
@@ -1561,6 +1564,7 @@ function saveCurrentAutomation(silent = false) {
         xpath: stepEl.dataset.selectorXpath || '',
         text: stepEl.dataset.selectorText || '',
         position: stepEl.dataset.selectorPosition || '',
+        coordinates: stepEl.dataset.selectorCoordinates || '',
         id: stepEl.dataset.selectorId || '',
         class: stepEl.dataset.selectorClass || '',
         attribute: stepEl.dataset.selectorAttribute || ''
@@ -2014,8 +2018,8 @@ function handlePickerClick(e) {
   const element = currentPickerElement || getElementUnderCursor(e);
   if (!element) return;
   
-  // Generate selectors for all strategies
-  const selectors = generateAllSelectors(element);
+  // Generate selectors for all strategies (pass click coordinates)
+  const selectors = generateAllSelectors(element, e.clientX, e.clientY);
   
   if (currentPickerStep) {
     const targetInput = currentPickerStep.querySelector('.target');
@@ -2027,6 +2031,7 @@ function handlePickerClick(e) {
     currentPickerStep.dataset.selectorXpath = selectors.xpath;
     currentPickerStep.dataset.selectorText = selectors.text;
     currentPickerStep.dataset.selectorPosition = selectors.position;
+    currentPickerStep.dataset.selectorCoordinates = selectors.coordinates;
     currentPickerStep.dataset.selectorId = selectors.id;
     currentPickerStep.dataset.selectorClass = selectors.class;
     currentPickerStep.dataset.selectorAttribute = selectors.attribute;
@@ -2177,13 +2182,14 @@ function generateSelector(element) {
   return path.join(' > ');
 }
 
-function generateAllSelectors(element) {
+function generateAllSelectors(element, clickX = null, clickY = null) {
   const selectors = {
     auto: '',
     querySelector: '',
     xpath: '',
     text: '',
     position: '',
+    coordinates: '',
     id: '',
     class: '',
     attribute: ''
@@ -2216,10 +2222,21 @@ function generateAllSelectors(element) {
   };
   selectors.xpath = getXPath(element);
   
-  // 3. Text Content - Get visible text
-  const text = element.textContent?.trim() || element.innerText?.trim() || element.value || '';
-  // Use first 50 chars if too long
-  selectors.text = text.length > 50 ? text.substring(0, 50) : text;
+  // 3. Text Content - Get visible text (prefer direct text nodes over nested content)
+  let text = '';
+  // For input elements, use value or placeholder
+  if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+    text = element.value || element.placeholder || '';
+  } else {
+    // Get direct text content (excluding child elements' text when possible)
+    // This gives more precise targeting
+    const clone = element.cloneNode(true);
+    // Remove child element nodes to get only direct text
+    Array.from(clone.children).forEach(child => child.remove());
+    text = clone.textContent?.trim() || element.textContent?.trim() || element.innerText?.trim() || '';
+  }
+  // Store full text for better matching (increased from 50 to 100 chars)
+  selectors.text = text.length > 100 ? text.substring(0, 100) : text;
   
   // 4. Position - Pure DOM structure with nth-of-type (no IDs or classes)
   const getPositionSelector = (el) => {
@@ -2249,7 +2266,18 @@ function generateAllSelectors(element) {
   };
   selectors.position = getPositionSelector(element);
   
-  // 5. ID (partial) - Use full ID or partial
+  // 5. Coordinates - Store absolute (x,y) position for clicking
+  if (clickX !== null && clickY !== null) {
+    selectors.coordinates = `${clickX},${clickY}`;
+  } else {
+    // Fallback: get center of element's bounding rect
+    const rect = element.getBoundingClientRect();
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+    selectors.coordinates = `${x},${y}`;
+  }
+  
+  // 6. ID (partial) - Use full ID or partial
   if (element.id) {
     selectors.id = element.id;
   } else {
