@@ -330,6 +330,33 @@ class AutomationExecutor {
     
     if (!element) return;
     
+    // Helper to check if element is in an iframe
+    const getIframeOffset = (el) => {
+      // Check if element's document is different from main document
+      const elementDoc = el.ownerDocument;
+      if (elementDoc === document) {
+        return { x: 0, y: 0, iframe: null };
+      }
+      
+      // Find the iframe containing this element
+      const iframes = document.querySelectorAll('iframe');
+      for (const iframe of iframes) {
+        try {
+          if (iframe.contentDocument === elementDoc || iframe.contentWindow.document === elementDoc) {
+            const iframeRect = iframe.getBoundingClientRect();
+            return { 
+              x: iframeRect.left, 
+              y: iframeRect.top,
+              iframe: iframe
+            };
+          }
+        } catch (e) {
+          // Cross-origin iframe, skip
+        }
+      }
+      return { x: 0, y: 0, iframe: null };
+    };
+    
     // Create highlight box
     this.highlightBox = document.createElement('div');
     this.highlightBox.id = 'autobrowse-highlight';
@@ -349,23 +376,49 @@ class AutomationExecutor {
     // Position highlight
     const updatePosition = () => {
       if (!this.highlightBox || !element) return;
+      
       const rect = element.getBoundingClientRect();
-      this.highlightBox.style.left = (rect.left + window.scrollX) + 'px';
-      this.highlightBox.style.top = (rect.top + window.scrollY) + 'px';
+      const iframeOffset = getIframeOffset(element);
+      
+      // Adjust coordinates if element is in iframe
+      this.highlightBox.style.left = (rect.left + iframeOffset.x + window.scrollX) + 'px';
+      this.highlightBox.style.top = (rect.top + iframeOffset.y + window.scrollY) + 'px';
       this.highlightBox.style.width = rect.width + 'px';
       this.highlightBox.style.height = rect.height + 'px';
     };
     
     updatePosition();
     
-    // Update position on scroll/resize
+    // Update position on scroll/resize (both main window and iframe)
     window.addEventListener('scroll', updatePosition, true);
     window.addEventListener('resize', updatePosition);
+    
+    // Also listen to iframe scroll if element is in iframe
+    const iframeOffset = getIframeOffset(element);
+    if (iframeOffset.iframe) {
+      try {
+        const iframeWindow = iframeOffset.iframe.contentWindow;
+        iframeWindow.addEventListener('scroll', updatePosition, true);
+        iframeWindow.addEventListener('resize', updatePosition);
+      } catch (e) {
+        // Can't access iframe events
+      }
+    }
     
     // Store cleanup function
     this.highlightBox._cleanup = () => {
       window.removeEventListener('scroll', updatePosition, true);
       window.removeEventListener('resize', updatePosition);
+      
+      if (iframeOffset.iframe) {
+        try {
+          const iframeWindow = iframeOffset.iframe.contentWindow;
+          iframeWindow.removeEventListener('scroll', updatePosition, true);
+          iframeWindow.removeEventListener('resize', updatePosition);
+        } catch (e) {
+          // Can't access iframe events
+        }
+      }
     };
   }
 
@@ -498,17 +551,37 @@ class AutomationExecutor {
 
     let element = null;
     let usedMethod = '';
+    
+    // Helper to get all accessible documents (main + iframes)
+    const getAllDocuments = () => {
+      const docs = [{ doc: document, iframe: null }];
+      const iframes = document.querySelectorAll('iframe');
+      iframes.forEach(iframe => {
+        try {
+          const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+          if (iframeDoc) {
+            docs.push({ doc: iframeDoc, iframe: iframe });
+          }
+        } catch (err) {
+          // Cross-origin iframe, skip
+        }
+      });
+      return docs;
+    };
 
     // If specific method is requested, try only that method
     if (method && method !== 'auto') {
       switch (method) {
         case 'querySelector':
           try {
-            element = document.querySelector(selector);
-            if (element) {
-              usedMethod = 'querySelector';
-              console.log(`Found element using ${usedMethod}:`, selector);
-              return element;
+            const docs = getAllDocuments();
+            for (const { doc } of docs) {
+              element = doc.querySelector(selector);
+              if (element) {
+                usedMethod = 'querySelector';
+                console.log(`Found element using ${usedMethod}:`, selector);
+                return element;
+              }
             }
           } catch (e) {
             console.warn(`querySelector failed for "${selector}":`, e.message);
@@ -517,18 +590,21 @@ class AutomationExecutor {
 
         case 'xpath':
           try {
-            const result = document.evaluate(
-              selector,
-              document,
-              null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE,
-              null
-            );
-            element = result.singleNodeValue;
-            if (element) {
-              usedMethod = 'XPath';
-              console.log(`Found element using ${usedMethod}:`, selector);
-              return element;
+            const docs = getAllDocuments();
+            for (const { doc } of docs) {
+              const result = doc.evaluate(
+                selector,
+                doc,
+                null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                null
+              );
+              element = result.singleNodeValue;
+              if (element) {
+                usedMethod = 'XPath';
+                console.log(`Found element using ${usedMethod}:`, selector);
+                return element;
+              }
             }
           } catch (e) {
             console.warn(`XPath failed for "${selector}":`, e.message);
@@ -546,11 +622,14 @@ class AutomationExecutor {
 
         case 'position':
           try {
-            element = document.querySelector(selector);
-            if (element) {
-              usedMethod = 'position selector';
-              console.log(`Found element using ${usedMethod}:`, selector);
-              return element;
+            const docs = getAllDocuments();
+            for (const { doc } of docs) {
+              element = doc.querySelector(selector);
+              if (element) {
+                usedMethod = 'position selector';
+                console.log(`Found element using ${usedMethod}:`, selector);
+                return element;
+              }
             }
           } catch (e) {
             console.warn(`Position selector failed for "${selector}":`, e.message);
@@ -705,61 +784,72 @@ class AutomationExecutor {
    * Find element by text content
    */
   findByTextContent(text) {
-    // Priority 1: Exact match on highly clickable elements
-    const clickableSelectors = 'button, a, input[type="submit"], input[type="button"]';
-    let clickableElements = document.querySelectorAll(clickableSelectors);
+    // Get all accessible documents
+    const docs = [document];
+    const iframes = document.querySelectorAll('iframe');
+    iframes.forEach(iframe => {
+      try {
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+        if (iframeDoc) docs.push(iframeDoc);
+      } catch (err) { /* Cross-origin, skip */ }
+    });
     
-    for (const el of clickableElements) {
-      // Check direct text content (excluding nested elements)
-      const clone = el.cloneNode(true);
-      Array.from(clone.children).forEach(child => child.remove());
-      const directText = clone.textContent?.trim() || '';
+    // Search in each document
+    for (const doc of docs) {
+      // Priority 1: Exact match on highly clickable elements
+      const clickableSelectors = 'button, a, input[type="submit"], input[type="button"]';
+      let clickableElements = doc.querySelectorAll(clickableSelectors);
+    
+      for (const el of clickableElements) {
+        // Check direct text content (excluding nested elements)
+        const clone = el.cloneNode(true);
+        Array.from(clone.children).forEach(child => child.remove());
+        const directText = clone.textContent?.trim() || '';
+        
+        if (directText === text || el.textContent.trim() === text || el.value === text || el.innerText.trim() === text) {
+          return el;
+        }
+      }
       
-      if (directText === text || el.textContent.trim() === text || el.value === text || el.innerText.trim() === text) {
-        return el;
-      }
-    }
-    
-    // Priority 2: Exact match on other interactive elements
-    const interactiveSelectors = 'label, span[onclick], div[onclick], span[role="button"], div[role="button"]';
-    let interactiveElements = document.querySelectorAll(interactiveSelectors);
-    
-    for (const el of interactiveElements) {
-      if (el.textContent.trim() === text || el.innerText.trim() === text) {
-        return el;
-      }
-    }
-    
-    // Priority 3: Partial match on clickable elements (for truncated text)
-    for (const el of clickableElements) {
-      if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
-        return el;
-      }
-    }
-    
-    // Priority 4: Broader search with partial match
-    const allElements = document.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
-    for (const el of allElements) {
-      const elementText = el.textContent.trim();
-      const innerText = el.innerText?.trim() || '';
+      // Priority 2: Exact match on other interactive elements
+      const interactiveSelectors = 'label, span[onclick], div[onclick], span[role="button"], div[role="button"]';
+      let interactiveElements = doc.querySelectorAll(interactiveSelectors);
       
-      // Exact match
-      if (elementText === text || innerText === text || el.value === text) {
-        return el;
+      for (const el of interactiveElements) {
+        if (el.textContent.trim() === text || el.innerText.trim() === text) {
+          return el;
+        }
       }
-    }
-    
-    // Priority 5: Partial match as last resort (must start with the text)
-    for (const el of allElements) {
-      if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
-        return el;
+      
+      // Priority 3: Partial match on clickable elements (for truncated text)
+      for (const el of clickableElements) {
+        if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
+          return el;
+        }
+      }
+      
+      // Priority 4: Broader search with partial match
+      const allElements = doc.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
+      for (const el of allElements) {
+        const elementText = el.textContent.trim();
+        const innerText = el.innerText?.trim() || '';
+        
+        // Exact match
+        if (elementText === text || innerText === text || el.value === text) {
+          return el;
+        }
+      }
+      
+      // Priority 5: Partial match as last resort (must start with the text)
+      for (const el of allElements) {
+        if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
+          return el;
+        }
       }
     }
     
     return null;
-  }
-
-  /**
+  }  /**
    * Find element by partial class name
    */
   findByPartialClass(className) {

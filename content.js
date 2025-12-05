@@ -1093,7 +1093,8 @@ function showAutomationList() {
             coordinates: stepEl.dataset.selectorCoordinates || '',
             id: stepEl.dataset.selectorId || '',
             class: stepEl.dataset.selectorClass || '',
-            attribute: stepEl.dataset.selectorAttribute || ''
+            attribute: stepEl.dataset.selectorAttribute || '',
+            iframe: stepEl.dataset.iframeSelector || ''
           };
         }
         
@@ -1213,6 +1214,7 @@ function createStepElement(step, index) {
     stepDiv.dataset.selectorId = step.selectors.id || '';
     stepDiv.dataset.selectorClass = step.selectors.class || '';
     stepDiv.dataset.selectorAttribute = step.selectors.attribute || '';
+    stepDiv.dataset.iframeSelector = step.selectors.iframe || '';
   }
   
   const actionText = step.action || 'click';
@@ -1567,7 +1569,8 @@ function saveCurrentAutomation(silent = false) {
         coordinates: stepEl.dataset.selectorCoordinates || '',
         id: stepEl.dataset.selectorId || '',
         class: stepEl.dataset.selectorClass || '',
-        attribute: stepEl.dataset.selectorAttribute || ''
+        attribute: stepEl.dataset.selectorAttribute || '',
+        iframe: stepEl.dataset.iframeSelector || ''
       };
     }
     
@@ -1974,8 +1977,26 @@ function handlePickerMouseMove(e) {
 function updatePickerHighlight(element) {
   if (!element) return;
   
+  // Get element's bounding rect
+  let rect = element.getBoundingClientRect();
+  
+  // If element is inside an iframe, adjust coordinates
+  if (element._parentIframe) {
+    const iframe = element._parentIframe;
+    const iframeRect = iframe.getBoundingClientRect();
+    
+    // Convert iframe-relative coordinates to page-relative coordinates
+    rect = {
+      left: iframeRect.left + rect.left,
+      top: iframeRect.top + rect.top,
+      width: rect.width,
+      height: rect.height,
+      right: iframeRect.left + rect.right,
+      bottom: iframeRect.top + rect.bottom
+    };
+  }
+  
   // Update highlight position
-  const rect = element.getBoundingClientRect();
   highlightBox.style.left = rect.left + window.scrollX + 'px';
   highlightBox.style.top = rect.top + window.scrollY + 'px';
   highlightBox.style.width = rect.width + 'px';
@@ -2035,6 +2056,7 @@ function handlePickerClick(e) {
     currentPickerStep.dataset.selectorId = selectors.id;
     currentPickerStep.dataset.selectorClass = selectors.class;
     currentPickerStep.dataset.selectorAttribute = selectors.attribute;
+    currentPickerStep.dataset.iframeSelector = selectors.iframe || '';
     
     // Set the target input to the current strategy's selector
     const currentMethod = selectorMethodSelect.value || 'auto';
@@ -2114,7 +2136,31 @@ function getElementUnderCursor(e) {
   uiElements.forEach(el => { if (el) el.style.display = 'none'; });
   
   // Get element at point
-  const element = document.elementFromPoint(e.clientX, e.clientY);
+  let element = document.elementFromPoint(e.clientX, e.clientY);
+  
+  // Check if element is an iframe and try to access its content
+  if (element && element.tagName === 'IFRAME') {
+    try {
+      const iframeDoc = element.contentDocument || element.contentWindow.document;
+      if (iframeDoc) {
+        // Get coordinates relative to iframe
+        const iframeRect = element.getBoundingClientRect();
+        const iframeX = e.clientX - iframeRect.left;
+        const iframeY = e.clientY - iframeRect.top;
+        
+        // Get element inside iframe
+        const iframeElement = iframeDoc.elementFromPoint(iframeX, iframeY);
+        if (iframeElement) {
+          // Store iframe reference on the element for later use
+          iframeElement._parentIframe = element;
+          element = iframeElement;
+        }
+      }
+    } catch (err) {
+      // Cross-origin iframe - can't access content
+      console.warn('Cannot access iframe content (cross-origin):', err.message);
+    }
+  }
   
   // Restore UI elements
   uiElements.forEach((el, i) => { if (el) el.style.display = originalDisplay[i] || ''; });
@@ -2183,6 +2229,10 @@ function generateSelector(element) {
 }
 
 function generateAllSelectors(element, clickX = null, clickY = null) {
+  // Check if element is inside an iframe
+  const iframe = element._parentIframe || null;
+  const iframeSelector = iframe ? generateSelector(iframe) : null;
+  
   const selectors = {
     auto: '',
     querySelector: '',
@@ -2192,7 +2242,8 @@ function generateAllSelectors(element, clickX = null, clickY = null) {
     coordinates: '',
     id: '',
     class: '',
-    attribute: ''
+    attribute: '',
+    iframe: iframeSelector // Store iframe selector if element is in iframe
   };
   
   // 1. Auto / CSS Selector (default CSS strategy)
