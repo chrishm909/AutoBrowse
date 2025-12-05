@@ -13,6 +13,9 @@ class AutomationExecutor {
     this.stepControlUI = null;
     this.continueExecution = null;
     this.activeRequests = 0;
+    this.runningIndicator = null;
+    this.shouldStop = false;
+    this.escapeHandler = null;
     this.setupNetworkMonitoring();
   }
 
@@ -120,6 +123,21 @@ class AutomationExecutor {
     this.onError = onError;
     this.onStepComplete = onStepComplete;
     this.testMode = testMode;
+    this.shouldStop = false;
+    
+    // Show running indicator
+    this.showRunningIndicator(automation.name);
+    
+    // Add ESC key listener to stop automation
+    this.escapeHandler = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.shouldStop = true;
+        console.log('ESC pressed - stopping automation...');
+      }
+    };
+    document.addEventListener('keydown', this.escapeHandler, true);
 
     try {
       if (!automation.steps || automation.steps.length === 0) {
@@ -136,6 +154,11 @@ class AutomationExecutor {
 
       // Execute each step sequentially
       for (let i = 0; i < automation.steps.length; i++) {
+        // Check if user requested stop
+        if (this.shouldStop) {
+          throw new Error('Automation stopped by user (ESC pressed)');
+        }
+        
         const step = automation.steps[i];
         
         if (this.onProgress) {
@@ -212,7 +235,82 @@ class AutomationExecutor {
       this.testMode = false;
       this.removeHighlight();
       this.removeStepControl();
+      this.removeRunningIndicator();
+      this.removeEscapeHandler();
     }
+  }
+
+  /**
+   * Show running indicator
+   */
+  showRunningIndicator(automationName) {
+    this.removeRunningIndicator();
+    
+    this.runningIndicator = document.createElement('div');
+    this.runningIndicator.id = 'autobrowse-running-indicator';
+    this.runningIndicator.style.cssText = `
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 12px 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      z-index: 2147483647;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: slideIn 0.3s ease-out;
+    `;
+    
+    this.runningIndicator.innerHTML = `
+      <div style="width: 8px; height: 8px; background: #4ade80; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite;"></div>
+      <div>
+        <div style="font-size: 12px; opacity: 0.9;">Running Automation</div>
+        <div style="font-size: 11px; opacity: 0.7; margin-top: 2px;">Press ESC to stop</div>
+      </div>
+    `;
+    
+    // Add animations
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes slideIn {
+        from { transform: translateX(100px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(1.2); }
+      }
+    `;
+    document.head.appendChild(style);
+    
+    document.body.appendChild(this.runningIndicator);
+  }
+  
+  /**
+   * Remove running indicator
+   */
+  removeRunningIndicator() {
+    if (this.runningIndicator) {
+      this.runningIndicator.remove();
+      this.runningIndicator = null;
+    }
+  }
+  
+  /**
+   * Remove escape key handler
+   */
+  removeEscapeHandler() {
+    if (this.escapeHandler) {
+      document.removeEventListener('keydown', this.escapeHandler, true);
+      this.escapeHandler = null;
+    }
+    this.shouldStop = false;
   }
 
   /**
@@ -796,53 +894,43 @@ class AutomationExecutor {
     
     // Search in each document
     for (const doc of docs) {
-      // Priority 1: Exact match on highly clickable elements
+      // Priority 1: Exact innerHTML match on highly clickable elements
       const clickableSelectors = 'button, a, input[type="submit"], input[type="button"]';
       let clickableElements = doc.querySelectorAll(clickableSelectors);
     
       for (const el of clickableElements) {
-        // Check direct text content (excluding nested elements)
-        const clone = el.cloneNode(true);
-        Array.from(clone.children).forEach(child => child.remove());
-        const directText = clone.textContent?.trim() || '';
+        // Check exact innerHTML match
+        const innerHTML = el.innerHTML.trim();
+        const textContent = el.textContent.trim();
+        const innerText = el.innerText?.trim() || '';
         
-        if (directText === text || el.textContent.trim() === text || el.value === text || el.innerText.trim() === text) {
+        if (innerHTML === text || textContent === text || innerText === text || el.value === text) {
           return el;
         }
       }
       
-      // Priority 2: Exact match on other interactive elements
+      // Priority 2: Exact innerHTML match on other interactive elements
       const interactiveSelectors = 'label, span[onclick], div[onclick], span[role="button"], div[role="button"]';
       let interactiveElements = doc.querySelectorAll(interactiveSelectors);
       
       for (const el of interactiveElements) {
-        if (el.textContent.trim() === text || el.innerText.trim() === text) {
-          return el;
-        }
-      }
-      
-      // Priority 3: Partial match on clickable elements (for truncated text)
-      for (const el of clickableElements) {
-        if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
-          return el;
-        }
-      }
-      
-      // Priority 4: Broader search with partial match
-      const allElements = doc.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
-      for (const el of allElements) {
-        const elementText = el.textContent.trim();
+        const innerHTML = el.innerHTML.trim();
+        const textContent = el.textContent.trim();
         const innerText = el.innerText?.trim() || '';
         
-        // Exact match
-        if (elementText === text || innerText === text || el.value === text) {
+        if (innerHTML === text || textContent === text || innerText === text) {
           return el;
         }
       }
       
-      // Priority 5: Partial match as last resort (must start with the text)
+      // Priority 3: Broader search with exact innerHTML match
+      const allElements = doc.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
       for (const el of allElements) {
-        if (el.textContent.trim().startsWith(text) || el.innerText.trim().startsWith(text)) {
+        const innerHTML = el.innerHTML.trim();
+        const textContent = el.textContent.trim();
+        const innerText = el.innerText?.trim() || '';
+        
+        if (innerHTML === text || textContent === text || innerText === text || el.value === text) {
           return el;
         }
       }

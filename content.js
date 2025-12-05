@@ -2479,21 +2479,45 @@ function isReservedShortcut(combo) {
 
 if (!window._autobrowseKeybindListener) {
   window._autobrowseKeybindListener = true;
-  document.addEventListener('keydown', function(e) {
-    if (isEditableTarget(e.target)) return; // don't trigger while typing
-    try {
-      chrome.storage.sync.get(['automations'], (data) => {
-        const automations = (data && data.automations) || [];
-        const pressed = eventToShortcut(e);
-        if (!pressed) return;
-        automations.forEach(auto => {
-          if (!auto || !auto.keybind) return;
-          const stored = normalizeShortcutString(auto.keybind);
-          if (stored && stored === pressed) {
-            try { runAutomation(auto); } catch (_) {}
-          }
-        });
-      });
-    } catch (_) {}
+  
+  // Cache automations to avoid constant storage reads
+  let cachedAutomations = [];
+  
+  // Load automations initially
+  chrome.storage.sync.get(['automations'], (data) => {
+    cachedAutomations = (data && data.automations) || [];
   });
+  
+  // Update cache when storage changes
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.automations) {
+      cachedAutomations = changes.automations.newValue || [];
+    }
+  });
+  
+  document.addEventListener('keydown', function(e) {
+    // Don't trigger while typing in editable fields
+    if (isEditableTarget(e.target)) return;
+    
+    const pressed = eventToShortcut(e);
+    if (!pressed) return;
+    
+    // Check cached automations
+    for (const auto of cachedAutomations) {
+      if (!auto || !auto.keybind) continue;
+      
+      const stored = normalizeShortcutString(auto.keybind);
+      
+      if (stored && stored === pressed) {
+        e.preventDefault();
+        e.stopPropagation();
+        try { 
+          runAutomation(auto); 
+        } catch (err) {
+          console.error('Error running automation:', err);
+        }
+        break; // Only run first matching automation
+      }
+    }
+  }, true); // Use capture phase to get events before page handlers
 }
