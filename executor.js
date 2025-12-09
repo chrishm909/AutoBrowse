@@ -637,12 +637,13 @@ class AutomationExecutor {
 
   /**
    * Find element by CSS selector with multiple fallback strategies
+   * Supports cross-origin iframes
    * @param {string} selector - CSS selector
    * @param {number} stepNumber - Step number for error messages
    * @param {string} method - Optional specific method to use ('auto', 'querySelector', 'xpath', 'text', 'id', 'class', 'attribute')
-   * @returns {HTMLElement} The found element
+   * @returns {HTMLElement|Object} The found element or cross-origin element reference
    */
-  findElement(selector, stepNumber, method = 'auto') {
+  async findElement(selector, stepNumber, method = 'auto') {
     if (!selector) {
       throw new Error(`Step ${stepNumber}: No target selector specified`);
     }
@@ -650,7 +651,7 @@ class AutomationExecutor {
     let element = null;
     let usedMethod = '';
     
-    // Helper to get all accessible documents (main + iframes)
+    // Helper to get all accessible documents (main + same-origin iframes)
     const getAllDocuments = () => {
       const docs = [{ doc: document, iframe: null }];
       const iframes = document.querySelectorAll('iframe');
@@ -661,7 +662,7 @@ class AutomationExecutor {
             docs.push({ doc: iframeDoc, iframe: iframe });
           }
         } catch (err) {
-          // Cross-origin iframe, skip
+          // Cross-origin iframe, will handle separately
         }
       });
       return docs;
@@ -874,8 +875,119 @@ class AutomationExecutor {
       }
     }
 
-    // All strategies failed
+    // All strategies failed in same-origin contexts
+    // Try cross-origin iframes if iframe manager is available
+    if (window.iframeManager) {
+      try {
+        const crossOriginResults = await this.findElementInCrossOriginIframes(selector, method);
+        if (crossOriginResults) {
+          console.log('Found element in cross-origin iframe:', crossOriginResults);
+          return crossOriginResults;
+        }
+      } catch (crossOriginError) {
+        console.warn('Cross-origin search failed:', crossOriginError.message);
+      }
+    }
+    
     throw new Error(`Step ${stepNumber}: Element not found using any strategy: ${selector}`);
+  }
+
+  /**
+   * Find element in cross-origin iframes
+   */
+  async findElementInCrossOriginIframes(selector, method = 'auto') {
+    if (!window.iframeManager) {
+      return null;
+    }
+
+    const detectedOrigins = window.iframeManager.getDetectedOrigins();
+    
+    for (const origin of detectedOrigins) {
+      // Check if we have permission for this origin
+      if (!window.iframeManager.isOriginAuthorized(origin)) {
+        console.log('Requesting permission for origin:', origin);
+        try {
+          await window.iframeManager.requestOriginPermission(origin);
+        } catch (permError) {
+          console.warn('Permission denied for origin:', origin);
+          continue;
+        }
+      }
+
+      // Get all iframes for this origin
+      const iframes = window.iframeManager.getIframesByOrigin(origin);
+      
+      for (const iframe of iframes) {
+        try {
+          // Send find command to iframe
+          const result = await this.sendIframeCommand(iframe, {
+            action: 'findElement',
+            selector: selector,
+            method: method
+          });
+          
+          if (result && result.success) {
+            // Return a special object indicating cross-origin element
+            return {
+              isCrossOrigin: true,
+              iframe: iframe,
+              origin: origin,
+              elementInfo: result.result,
+              selector: selector,
+              method: method
+            };
+          }
+        } catch (iframeError) {
+          console.warn('Search failed in iframe:', iframe, iframeError);
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Send command to cross-origin iframe
+   */
+  async sendIframeCommand(iframe, command) {
+    return new Promise((resolve, reject) => {
+      const commandId = 'cmd_' + Date.now() + '_' + Math.random();
+      command.commandId = commandId;
+      command.type = 'autobrowse-command';
+      
+      // Listen for response
+      const responseHandler = (event) => {
+        if (event.data && 
+            event.data.type === 'autobrowse-response' && 
+            event.data.commandId === commandId) {
+          window.removeEventListener('message', responseHandler);
+          clearTimeout(timeout);
+          
+          if (event.data.success) {
+            resolve(event.data);
+          } else {
+            reject(new Error(event.data.error || 'Command failed'));
+          }
+        }
+      };
+      
+      window.addEventListener('message', responseHandler);
+      
+      // Timeout after 10 seconds
+      const timeout = setTimeout(() => {
+        window.removeEventListener('message', responseHandler);
+        reject(new Error('Iframe command timeout'));
+      }, 10000);
+      
+      // Send command
+      try {
+        iframe.contentWindow.postMessage(command, '*');
+      } catch (e) {
+        window.removeEventListener('message', responseHandler);
+        clearTimeout(timeout);
+        reject(e);
+      }
+    });
   }
 
   /**
@@ -967,11 +1079,25 @@ class AutomationExecutor {
   }
 
   /**
-   * Click an element
+   * Click an element (supports cross-origin iframes)
    */
   async clickElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Clicking cross-origin element');
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'click',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Click failed in iframe');
+        }
+        return;
+      }
       
       // Check if this is a coordinate-based click
       if (element && element.isCoordinateClick) {
@@ -1006,11 +1132,27 @@ class AutomationExecutor {
   }
 
   /**
-   * Mouse down on element
+   * Mouse down on element (supports cross-origin iframes)
    */
   async mousedownElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Mousedown on cross-origin element');
+        // Cross-origin mousedown not directly supported, try click instead
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'click',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Mousedown failed in iframe');
+        }
+        return;
+      }
+      
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(300);
       
@@ -1026,11 +1168,27 @@ class AutomationExecutor {
   }
 
   /**
-   * Mouse up on element
+   * Mouse up on element (supports cross-origin iframes)
    */
   async mouseupElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Mouseup on cross-origin element');
+        // Cross-origin mouseup not directly supported, try click instead
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'click',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Mouseup failed in iframe');
+        }
+        return;
+      }
+      
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(300);
       
@@ -1046,11 +1204,26 @@ class AutomationExecutor {
   }
 
   /**
-   * Hover over an element
+   * Hover over an element (supports cross-origin iframes)
    */
   async hoverElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Hovering over cross-origin element');
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'hover',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Hover failed in iframe');
+        }
+        return;
+      }
+      
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(300);
       
@@ -1073,11 +1246,27 @@ class AutomationExecutor {
   }
 
   /**
-   * Focus an element
+   * Focus an element (supports cross-origin iframes)
    */
   async focusElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Focusing cross-origin element');
+        // Cross-origin focus is limited, but we can try clicking
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'click',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Focus failed in iframe');
+        }
+        return;
+      }
+      
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(300);
       
@@ -1088,11 +1277,28 @@ class AutomationExecutor {
   }
 
   /**
-   * Input text into an element
+   * Input text into an element (supports cross-origin iframes)
    */
   async inputText(selector, text, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Inputting text in cross-origin element');
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'input',
+          selector: selector,
+          value: text,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Input failed in iframe');
+        }
+        return;
+      }
+      
+      // Scroll element into view
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(300);
       
@@ -1130,11 +1336,26 @@ class AutomationExecutor {
   }
 
   /**
-   * Scroll to an element
+   * Scroll to an element (supports cross-origin iframes)
    */
   async scrollToElement(selector, stepNumber, method = 'auto') {
     try {
-      const element = this.findElement(selector, stepNumber, method);
+      const element = await this.findElement(selector, stepNumber, method);
+      
+      // Check if this is a cross-origin element
+      if (element && element.isCrossOrigin) {
+        console.log('Scrolling to cross-origin element');
+        const result = await this.sendIframeCommand(element.iframe, {
+          action: 'scroll',
+          selector: selector,
+          method: method
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Scroll failed in iframe');
+        }
+        return;
+      }
+      
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await this.wait(500); // Wait for scroll animation
     } catch (error) {

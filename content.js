@@ -4,6 +4,12 @@ let bubble = null;
 let panel = null;
 let isOpen = false;
 
+// Initialize iframe manager if in top frame
+if (window === window.top && window.iframeManager) {
+  console.log('[AutoBrowse] Initializing iframe manager');
+  window.iframeManager.initialize();
+}
+
 // Initialize on page load
 initializeBubble();
 

@@ -6,7 +6,17 @@
   "permissions": [
     "activeTab",
     "tabs",
-    "storage"
+    "storage",
+    "scripting"
+  ],
+  "optional_permissions": [
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -18,7 +28,15 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["executor.js", "content.js"]
+      "js": ["iframe-manager.js", "executor.js", "content.js"],
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["iframe-bridge.js"],
+      "matches": ["<all_urls>"]
     }
   ],
   "options_page": "options.html"
