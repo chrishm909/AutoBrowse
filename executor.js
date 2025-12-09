@@ -105,6 +105,12 @@ class AutomationExecutor {
    * @param {boolean} testMode - If true, pause before each step and highlight target element
    */
   async run(automation, onProgress, onComplete, onError, onStepComplete, testMode = false) {
+    // Safety check - only run automations in top window
+    if (window !== window.top) {
+      console.warn('[AutoBrowse Executor] Automation execution blocked in iframe');
+      return;
+    }
+    
     if (this.isRunning) {
       if (onError) {
         try {
@@ -244,6 +250,11 @@ class AutomationExecutor {
    * Show running indicator
    */
   showRunningIndicator(automationName) {
+    // Safety check - never run in iframes
+    if (window !== window.top) {
+      return;
+    }
+    
     this.removeRunningIndicator();
     
     this.runningIndicator = document.createElement('div');
@@ -320,14 +331,19 @@ class AutomationExecutor {
    * @param {number} totalSteps - Total number of steps
    */
   async showStepControl(step, stepNumber, totalSteps) {
-    return new Promise((resolve, reject) => {
+    // Safety check - never run in iframes
+    if (window !== window.top) {
+      return Promise.resolve('continue');
+    }
+    
+    return new Promise(async (resolve, reject) => {
       // Find and highlight the target element
       try {
-        const element = this.findElement(step.target, stepNumber, step.selectorMethod || 'auto');
+        const element = await this.findElement(step.target, stepNumber, step.selectorMethod || 'auto');
         this.highlightElement(element);
         
         // Scroll element into view
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await this.scrollElementIntoView(element);
       } catch (error) {
         console.warn(`Could not find element to highlight: ${error.message}`);
       }
@@ -424,6 +440,11 @@ class AutomationExecutor {
    * @param {HTMLElement} element - The element to highlight
    */
   highlightElement(element) {
+    // Safety check - never run in iframes
+    if (window !== window.top) {
+      return;
+    }
+    
     this.removeHighlight();
     
     if (!element) return;
@@ -668,18 +689,26 @@ class AutomationExecutor {
       return docs;
     };
 
+    // Helper to wrap element with iframe info if in iframe
+    const wrapElement = (el, iframe) => {
+      if (iframe && el) {
+        el._autobrowse_iframe = iframe;
+      }
+      return el;
+    };
+
     // If specific method is requested, try only that method
     if (method && method !== 'auto') {
       switch (method) {
         case 'querySelector':
           try {
             const docs = getAllDocuments();
-            for (const { doc } of docs) {
+            for (const { doc, iframe } of docs) {
               element = doc.querySelector(selector);
               if (element) {
                 usedMethod = 'querySelector';
-                console.log(`Found element using ${usedMethod}:`, selector);
-                return element;
+                console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+                return wrapElement(element, iframe);
               }
             }
           } catch (e) {
@@ -690,7 +719,7 @@ class AutomationExecutor {
         case 'xpath':
           try {
             const docs = getAllDocuments();
-            for (const { doc } of docs) {
+            for (const { doc, iframe } of docs) {
               const result = doc.evaluate(
                 selector,
                 doc,
@@ -701,8 +730,8 @@ class AutomationExecutor {
               element = result.singleNodeValue;
               if (element) {
                 usedMethod = 'XPath';
-                console.log(`Found element using ${usedMethod}:`, selector);
-                return element;
+                console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+                return wrapElement(element, iframe);
               }
             }
           } catch (e) {
@@ -711,11 +740,14 @@ class AutomationExecutor {
           break;
 
         case 'text':
-          element = this.findByTextContent(selector);
-          if (element) {
-            usedMethod = 'text content';
-            console.log(`Found element using ${usedMethod}:`, selector);
-            return element;
+          const docs = getAllDocuments();
+          for (const { doc, iframe } of docs) {
+            element = this.findByTextContentInDoc(selector, doc);
+            if (element) {
+              usedMethod = 'text content';
+              console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+              return wrapElement(element, iframe);
+            }
           }
           break;
 
@@ -776,20 +808,36 @@ class AutomationExecutor {
           break;
       }
       
+      // If specific method was requested but failed in same-origin contexts,
+      // try cross-origin iframes before giving up
+      if (window.iframeManager) {
+        try {
+          console.log(`Trying cross-origin iframes for method '${method}':`, selector);
+          const crossOriginResults = await this.findElementInCrossOriginIframes(selector, method);
+          if (crossOriginResults) {
+            console.log('Found element in cross-origin iframe:', crossOriginResults);
+            return crossOriginResults;
+          }
+        } catch (crossOriginError) {
+          console.warn('Cross-origin search failed:', crossOriginError.message);
+        }
+      }
+      
       // If specific method was requested but failed, throw error
       throw new Error(`Step ${stepNumber}: Element not found using method '${method}': ${selector}`);
     }
 
     // Auto mode: try all strategies with fallbacks
-    // Strategy 1: Direct querySelector
-    // Auto mode: try all strategies with fallbacks
-    // Strategy 1: Direct querySelector
+    // Strategy 1: Direct querySelector in all documents
     try {
-      element = document.querySelector(selector);
-      if (element) {
-        usedMethod = 'querySelector';
-        console.log(`Found element using ${usedMethod}:`, selector);
-        return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        element = doc.querySelector(selector);
+        if (element) {
+          usedMethod = 'querySelector';
+          console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+          return wrapElement(element, iframe);
+        }
       }
     } catch (e) {
       console.warn(`querySelector failed for "${selector}":`, e.message);
@@ -797,69 +845,84 @@ class AutomationExecutor {
 
     // Strategy 2: Try as XPath if it looks like one
     if (selector.startsWith('/') || selector.startsWith('(')) {
-      try {
-        const result = document.evaluate(
-          selector,
-          document,
-          null,
-          XPathResult.FIRST_ORDERED_NODE_TYPE,
-          null
-        );
-        element = result.singleNodeValue;
-        if (element) {
-          usedMethod = 'XPath';
-          console.log(`Found element using ${usedMethod}:`, selector);
-          return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        try {
+          const result = doc.evaluate(
+            selector,
+            doc,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+          );
+          element = result.singleNodeValue;
+          if (element) {
+            usedMethod = 'XPath';
+            console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+            return wrapElement(element, iframe);
+          }
+        } catch (e) {
+          console.warn(`XPath failed for "${selector}":`, e.message);
         }
-      } catch (e) {
-        console.warn(`XPath failed for "${selector}":`, e.message);
       }
     }
 
     // Strategy 3: Try finding by text content (if selector looks like text)
     if (!selector.includes('.') && !selector.includes('#') && !selector.includes('[') && !selector.startsWith('/')) {
-      element = this.findByTextContent(selector);
-      if (element) {
-        usedMethod = 'text content';
-        console.log(`Found element using ${usedMethod}:`, selector);
-        return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        element = this.findByTextContentInDoc(selector, doc);
+        if (element) {
+          usedMethod = 'text content';
+          console.log(`Found element using ${usedMethod}:`, selector, iframe ? '(in iframe)' : '');
+          return wrapElement(element, iframe);
+        }
       }
     }
 
     // Strategy 4: Try relaxed CSS selector (remove :nth-child)
     if (selector.includes(':nth-child')) {
       const relaxedSelector = selector.replace(/:nth-child\(\d+\)/g, '');
-      try {
-        element = document.querySelector(relaxedSelector);
-        if (element) {
-          usedMethod = 'relaxed selector';
-          console.log(`Found element using ${usedMethod}:`, relaxedSelector);
-          return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        try {
+          element = doc.querySelector(relaxedSelector);
+          if (element) {
+            usedMethod = 'relaxed selector';
+            console.log(`Found element using ${usedMethod}:`, relaxedSelector, iframe ? '(in iframe)' : '');
+            return wrapElement(element, iframe);
+          }
+        } catch (e) {
+          console.warn(`Relaxed selector failed for "${relaxedSelector}":`, e.message);
         }
-      } catch (e) {
-        console.warn(`Relaxed selector failed for "${relaxedSelector}":`, e.message);
       }
     }
 
     // Strategy 5: Try finding by partial class match
     if (selector.startsWith('.')) {
       const className = selector.substring(1).split('.')[0];
-      element = this.findByPartialClass(className);
-      if (element) {
-        usedMethod = 'partial class';
-        console.log(`Found element using ${usedMethod}:`, className);
-        return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        element = this.findByPartialClassInDoc(className, doc);
+        if (element) {
+          usedMethod = 'partial class';
+          console.log(`Found element using ${usedMethod}:`, className, iframe ? '(in iframe)' : '');
+          return wrapElement(element, iframe);
+        }
       }
     }
 
     // Strategy 6: Try finding by ID without exact match
     if (selector.startsWith('#')) {
       const idPart = selector.substring(1).split(/[.\s\[>]/)[0];
-      element = this.findByPartialId(idPart);
-      if (element) {
-        usedMethod = 'partial ID';
-        console.log(`Found element using ${usedMethod}:`, idPart);
-        return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        element = this.findByPartialIdInDoc(idPart, doc);
+        if (element) {
+          usedMethod = 'partial ID';
+          console.log(`Found element using ${usedMethod}:`, idPart, iframe ? '(in iframe)' : '');
+          return wrapElement(element, iframe);
+        }
       }
     }
 
@@ -867,11 +930,14 @@ class AutomationExecutor {
     const attrMatch = selector.match(/\[([^=\]]+)=["']([^"']+)["']\]/);
     if (attrMatch) {
       const [, attrName, attrValue] = attrMatch;
-      element = this.findByAttribute(attrName, attrValue);
-      if (element) {
-        usedMethod = 'attribute match';
-        console.log(`Found element using ${usedMethod}:`, attrName, attrValue);
-        return element;
+      const docs = getAllDocuments();
+      for (const { doc, iframe } of docs) {
+        element = this.findByAttributeInDoc(attrName, attrValue, doc);
+        if (element) {
+          usedMethod = 'attribute match';
+          console.log(`Found element using ${usedMethod}:`, attrName, attrValue, iframe ? '(in iframe)' : '');
+          return wrapElement(element, iframe);
+        }
       }
     }
 
@@ -1049,7 +1115,109 @@ class AutomationExecutor {
     }
     
     return null;
-  }  /**
+  }
+
+  /**
+   * Check if an element is part of the AutoBrowse extension UI
+   */
+  isExtensionElement(element) {
+    if (!element) return false;
+    
+    // Check if element or any parent has an AutoBrowse ID
+    let current = element;
+    while (current) {
+      if (current.id && (
+        current.id.startsWith('autobrowse-') ||
+        current.id === 'automation-editor' ||
+        current.id === 'automation-list' ||
+        current.id === 'parameter-popup-overlay'
+      )) {
+        return true;
+      }
+      
+      // Check for AutoBrowse classes
+      if (current.className && typeof current.className === 'string' && (
+        current.className.includes('autobrowse') ||
+        current.className.includes('picker-overlay') ||
+        current.className.includes('picker-tooltip') ||
+        current.className.includes('element-highlight') ||
+        current.className.includes('panel-') ||
+        current.className.includes('step-item')
+      )) {
+        return true;
+      }
+      
+      current = current.parentElement;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Find element by text content in a specific document
+   */
+  findByTextContentInDoc(text, doc) {
+    // Helper to extract direct text content (same method used during picking)
+    const getDirectText = (el) => {
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        return el.value || el.placeholder || '';
+      }
+      // Clone and remove children to get only direct text
+      const clone = el.cloneNode(true);
+      Array.from(clone.children).forEach(child => child.remove());
+      return clone.textContent?.trim() || '';
+    };
+
+    // Priority 1: Exact match on highly clickable elements
+    const clickableSelectors = 'button, a, input[type="submit"], input[type="button"]';
+    let clickableElements = doc.querySelectorAll(clickableSelectors);
+  
+    for (const el of clickableElements) {
+      // Skip extension UI elements
+      if (this.isExtensionElement(el)) continue;
+      
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      
+      if (directText === text || fullText === text) {
+        return el;
+      }
+    }
+    
+    // Priority 2: Exact match on other interactive elements
+    const interactiveSelectors = 'label, span[onclick], div[onclick], span[role="button"], div[role="button"]';
+    let interactiveElements = doc.querySelectorAll(interactiveSelectors);
+    
+    for (const el of interactiveElements) {
+      // Skip extension UI elements
+      if (this.isExtensionElement(el)) continue;
+      
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      
+      if (directText === text || fullText === text) {
+        return el;
+      }
+    }
+    
+    // Priority 3: Broader search with exact match
+    const allElements = doc.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, input, li, td, th');
+    for (const el of allElements) {
+      // Skip extension UI elements
+      if (this.isExtensionElement(el)) continue;
+      
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      
+      if (directText === text || fullText === text) {
+        return el;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
    * Find element by partial class name
    */
   findByPartialClass(className) {
@@ -1058,11 +1226,37 @@ class AutomationExecutor {
   }
 
   /**
+   * Find element by partial class name in a specific document
+   */
+  findByPartialClassInDoc(className, doc) {
+    const elements = doc.querySelectorAll(`[class*="${className}"]`);
+    for (const el of elements) {
+      if (!this.isExtensionElement(el)) {
+        return el;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Find element by partial ID
    */
   findByPartialId(idPart) {
     const elements = document.querySelectorAll(`[id*="${idPart}"]`);
     return elements.length > 0 ? elements[0] : null;
+  }
+
+  /**
+   * Find element by partial ID in a specific document
+   */
+  findByPartialIdInDoc(idPart, doc) {
+    const elements = doc.querySelectorAll(`[id*="${idPart}"]`);
+    for (const el of elements) {
+      if (!this.isExtensionElement(el)) {
+        return el;
+      }
+    }
+    return null;
   }
 
   /**
@@ -1076,6 +1270,51 @@ class AutomationExecutor {
     // Try partial match
     element = document.querySelector(`[${attrName}*="${attrValue}"]`);
     return element;
+  }
+
+  /**
+   * Find element by attribute value in a specific document
+   */
+  findByAttributeInDoc(attrName, attrValue, doc) {
+    // Try exact match first
+    let elements = doc.querySelectorAll(`[${attrName}="${attrValue}"]`);
+    for (const el of elements) {
+      if (!this.isExtensionElement(el)) {
+        return el;
+      }
+    }
+    
+    // Try partial match
+    elements = doc.querySelectorAll(`[${attrName}*="${attrValue}"]`);
+    for (const el of elements) {
+      if (!this.isExtensionElement(el)) {
+        return el;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Scroll element into view, handling iframes
+   */
+  async scrollElementIntoView(element) {
+    if (!element) return;
+
+    // Check if element is in an iframe
+    const iframe = element._autobrowse_iframe;
+    if (iframe) {
+      // First scroll the iframe into view in the main page
+      iframe.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await this.wait(200);
+      // Then scroll the element into view within the iframe
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await this.wait(300);
+    } else {
+      // Element is in main document
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await this.wait(300);
+    }
   }
 
   /**
@@ -1120,9 +1359,8 @@ class AutomationExecutor {
         return;
       }
       
-      // Scroll element into view
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300); // Wait for scroll to complete
+      // Scroll element into view (handles iframes)
+      await this.scrollElementIntoView(element);
       
       // Create and dispatch click event
       element.click();
@@ -1153,8 +1391,7 @@ class AutomationExecutor {
         return;
       }
       
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300);
+      await this.scrollElementIntoView(element);
       
       const event = new MouseEvent('mousedown', {
         bubbles: true,
@@ -1189,8 +1426,7 @@ class AutomationExecutor {
         return;
       }
       
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300);
+      await this.scrollElementIntoView(element);
       
       const event = new MouseEvent('mouseup', {
         bubbles: true,
@@ -1224,8 +1460,7 @@ class AutomationExecutor {
         return;
       }
       
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300);
+      await this.scrollElementIntoView(element);
       
       const event = new MouseEvent('mouseover', {
         bubbles: true,
@@ -1267,8 +1502,7 @@ class AutomationExecutor {
         return;
       }
       
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300);
+      await this.scrollElementIntoView(element);
       
       element.focus();
     } catch (error) {
@@ -1299,8 +1533,7 @@ class AutomationExecutor {
       }
       
       // Scroll element into view
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(300);
+      await this.scrollElementIntoView(element);
       
       // Focus the element
       element.focus();
@@ -1356,8 +1589,8 @@ class AutomationExecutor {
         return;
       }
       
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await this.wait(500); // Wait for scroll animation
+      await this.scrollElementIntoView(element);
+      await this.wait(200); // Additional wait for scroll animation
     } catch (error) {
       throw new Error(`Scroll failed: ${error.message}`);
     }
@@ -1380,5 +1613,7 @@ class AutomationExecutor {
   }
 }
 
-// Create a global instance
-window.automationExecutor = new AutomationExecutor();
+// Create a global instance (only in top window)
+if (window === window.top) {
+  window.automationExecutor = new AutomationExecutor();
+}

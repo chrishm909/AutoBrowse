@@ -8,3 +8,6 @@ node_modules/
 # ignore packaged Chrome extension builds
 *.crx
 *.pem
+
+# ignore testbed directory (local testing only)
+testbed/

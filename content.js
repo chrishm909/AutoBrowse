@@ -1,20 +1,30 @@
 // Content script for AutoBrowse extension
 
+// Only run the full extension UI in the top-level window, not in iframes
+const isTopWindow = (window === window.top);
+
 let bubble = null;
 let panel = null;
 let isOpen = false;
 
 // Initialize iframe manager if in top frame
-if (window === window.top && window.iframeManager) {
+if (isTopWindow && window.iframeManager) {
   console.log('[AutoBrowse] Initializing iframe manager');
   window.iframeManager.initialize();
 }
 
-// Initialize on page load
-initializeBubble();
+// Initialize on page load (only in top window)
+if (isTopWindow) {
+  initializeBubble();
+}
 
 // Check if this URL should show the interface
 function initializeBubble() {
+  // Safety check - never run in iframes
+  if (window !== window.top) {
+    return;
+  }
+  
   try {
     chrome.storage.sync.get(['automations'], (data) => {
       if (chrome.runtime.lastError) {
@@ -68,6 +78,11 @@ try {
 
 // Create floating bubble and panel
 function createFloatingUI() {
+  // Safety check - never run in iframes
+  if (window !== window.top) {
+    return;
+  }
+  
   // Create bubble button
   bubble = document.createElement('div');
   bubble.id = 'autobrowse-bubble';
@@ -1742,6 +1757,11 @@ function substituteParameters(text, paramValues) {
 }
 
 function showParameterPopup(automation, callback) {
+  // Safety check - never run in iframes
+  if (window !== window.top) {
+    return;
+  }
+  
   // Create or get popup overlay
   let overlay = document.getElementById('parameter-popup-overlay');
   if (!overlay) {
@@ -1852,27 +1872,29 @@ function showStatus(message, type) {
   }
 }
 
-// Listen for messages from background script
-try {
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    try {
-      if (request.action === 'runAutomation') {
-        const automation = request.automation;
-        showStatus(`Running: ${automation.name}`, 'success');
-        // Execute automation steps here
-        sendResponse({ status: 'success' });
+// Listen for messages from background script (only in top window)
+if (isTopWindow) {
+  try {
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      try {
+        if (request.action === 'runAutomation') {
+          const automation = request.automation;
+          showStatus(`Running: ${automation.name}`, 'success');
+          // Execute automation steps here
+          sendResponse({ status: 'success' });
+        }
+      } catch (error) {
+        console.warn('Message handler error:', error);
+        sendResponse({ status: 'error', error: error.message });
       }
-    } catch (error) {
-      console.warn('Message handler error:', error);
-      sendResponse({ status: 'error', error: error.message });
-    }
-    return true;
-  });
-} catch (error) {
-  console.warn('Failed to add message listener:', error);
+      return true;
+    });
+  } catch (error) {
+    console.warn('Failed to add message listener:', error);
+  }
 }
 
-// Element Picker functionality
+// Element Picker functionality (only in top window)
 let pickerActive = false;
 let currentPickerStep = null;
 let currentPickerIndex = null;
@@ -1880,9 +1902,11 @@ let currentPickerElement = null;
 let highlightBox = null;
 let pickerOverlay = null;
 let pickerTooltip = null;
+let pickerMouseMoveTimeout = null;
+let pickerRequestId = 0;
 
-// Global keyboard shortcut for element picker (Ctrl+Shift+E)
-if (!window._elementPickerShortcutListener) {
+// Global keyboard shortcut for element picker (Ctrl+Shift+E) - only in top window
+if (isTopWindow && !window._elementPickerShortcutListener) {
   window._elementPickerShortcutListener = true;
   document.addEventListener('keydown', (e) => {
     // Only trigger if editor is open and a step is expanded
@@ -1902,6 +1926,11 @@ if (!window._elementPickerShortcutListener) {
 }
 
 function startElementPicker(stepDiv, index) {
+  // Safety check - never run in iframes
+  if (window !== window.top) {
+    return;
+  }
+  
   if (pickerActive) return;
   
   pickerActive = true;
@@ -1921,6 +1950,7 @@ function startElementPicker(stepDiv, index) {
   // Create highlight box
   highlightBox = document.createElement('div');
   highlightBox.className = 'element-highlight';
+  highlightBox.style.display = 'block'; // Ensure it's visible
   document.body.appendChild(highlightBox);
   
   // Create tooltip
@@ -1966,18 +1996,34 @@ function stopElementPicker() {
 function handlePickerMouseMove(e) {
   if (!pickerActive) return;
   
-  // Get element under cursor (excluding our UI elements)
-  const element = getElementUnderCursor(e);
-  if (!element) return;
+  // Debounce mousemove to prevent excessive updates
+  if (pickerMouseMoveTimeout) {
+    clearTimeout(pickerMouseMoveTimeout);
+  }
   
-  currentPickerElement = element;
-  updatePickerHighlight(element);
-  
-  // Update tooltip with element tag
-  const elementTag = getElementTag(element);
-  pickerTooltip.innerHTML = `${elementTag}<br><small style="opacity: 0.7;">↑ Parent | ↓ Child | Click to select</small>`;
-  pickerTooltip.style.left = (e.clientX + 15) + 'px';
-  pickerTooltip.style.top = (e.clientY + 15) + 'px';
+  pickerMouseMoveTimeout = setTimeout(() => {
+    const requestId = ++pickerRequestId;
+    
+    // Get element under cursor (excluding our UI elements)
+    getElementUnderCursor(e).then(element => {
+      // Ignore if this is an old request
+      if (requestId !== pickerRequestId) return;
+      if (!element) return;
+      
+      currentPickerElement = element;
+      updatePickerHighlight(element);
+      
+      // Update tooltip with element tag
+      const elementTag = getElementTag(element);
+      pickerTooltip.innerHTML = `${elementTag}<br><small style="opacity: 0.7;">↑ Parent | ↓ Child | Click to select</small>`;
+      pickerTooltip.style.left = (e.clientX + 15) + 'px';
+      pickerTooltip.style.top = (e.clientY + 15) + 'px';
+    }).catch(err => {
+      // Ignore if this is an old request
+      if (requestId !== pickerRequestId) return;
+      console.warn('Element picker error:', err);
+    });
+  }, 50); // 50ms debounce
 }
 
 function updatePickerHighlight(element) {
@@ -1986,8 +2032,14 @@ function updatePickerHighlight(element) {
   // Get element's bounding rect
   let rect = element.getBoundingClientRect();
   
-  // If element is inside an iframe, adjust coordinates
-  if (element._parentIframe) {
+  // Debug logging for cross-origin elements
+  if (element._isCrossOriginElement) {
+    console.log('Cross-origin element rect:', rect);
+  }
+  
+  // Cross-origin elements already have adjusted coordinates from getBoundingClientRect
+  // Same-origin iframe elements need adjustment
+  if (element._parentIframe && !element._isCrossOriginElement) {
     const iframe = element._parentIframe;
     const iframeRect = iframe.getBoundingClientRect();
     
@@ -2007,6 +2059,18 @@ function updatePickerHighlight(element) {
   highlightBox.style.top = rect.top + window.scrollY + 'px';
   highlightBox.style.width = rect.width + 'px';
   highlightBox.style.height = rect.height + 'px';
+  
+  // Debug logging
+  if (element._isCrossOriginElement) {
+    console.log('Highlight box styles:', {
+      left: highlightBox.style.left,
+      top: highlightBox.style.top,
+      width: highlightBox.style.width,
+      height: highlightBox.style.height,
+      display: highlightBox.style.display,
+      visibility: getComputedStyle(highlightBox).visibility
+    });
+  }
 }
 
 function getElementTag(element) {
@@ -2022,14 +2086,22 @@ function getElementTag(element) {
   }
   
   // Add other notable attributes (limit to important ones)
-  const notableAttrs = ['name', 'type', 'role', 'data-testid', 'aria-label'];
-  notableAttrs.forEach(attr => {
-    if (element.hasAttribute(attr)) {
-      let val = element.getAttribute(attr);
-      if (val.length > 30) val = val.substring(0, 30) + '...';
-      tag += ` ${attr}="${val}"`;
-    }
-  });
+  // Check if element has standard DOM methods (not a virtual element)
+  if (element.hasAttribute && element.getAttribute) {
+    const notableAttrs = ['name', 'type', 'role', 'data-testid', 'aria-label'];
+    notableAttrs.forEach(attr => {
+      if (element.hasAttribute(attr)) {
+        let val = element.getAttribute(attr);
+        if (val.length > 30) val = val.substring(0, 30) + '...';
+        tag += ` ${attr}="${val}"`;
+      }
+    });
+  }
+  
+  // For cross-origin elements, add indicator
+  if (element._isCrossOriginElement) {
+    tag += ` [cross-origin]`;
+  }
   
   tag += '>';
   return tag;
@@ -2042,39 +2114,48 @@ function handlePickerClick(e) {
   e.stopPropagation();
   
   // Use currentPickerElement if available (after navigation), otherwise get element under cursor
-  const element = currentPickerElement || getElementUnderCursor(e);
-  if (!element) return;
+  const elementOrPromise = currentPickerElement || getElementUnderCursor(e);
   
-  // Generate selectors for all strategies (pass click coordinates)
-  const selectors = generateAllSelectors(element, e.clientX, e.clientY);
-  
-  if (currentPickerStep) {
-    const targetInput = currentPickerStep.querySelector('.target');
-    const selectorMethodSelect = currentPickerStep.querySelector('.selector-method');
+  Promise.resolve(elementOrPromise).then(element => {
+    if (!element) {
+      console.warn('No element found to select');
+      return;
+    }
     
-    // Store all selectors as data attributes on the step
-    currentPickerStep.dataset.selectorAuto = selectors.auto;
-    currentPickerStep.dataset.selectorQuerySelector = selectors.querySelector;
-    currentPickerStep.dataset.selectorXpath = selectors.xpath;
-    currentPickerStep.dataset.selectorText = selectors.text;
-    currentPickerStep.dataset.selectorPosition = selectors.position;
-    currentPickerStep.dataset.selectorCoordinates = selectors.coordinates;
-    currentPickerStep.dataset.selectorId = selectors.id;
-    currentPickerStep.dataset.selectorClass = selectors.class;
-    currentPickerStep.dataset.selectorAttribute = selectors.attribute;
-    currentPickerStep.dataset.iframeSelector = selectors.iframe || '';
+    // Generate selectors for all strategies (pass click coordinates)
+    const selectors = generateAllSelectors(element, e.clientX, e.clientY);
     
-    // Set the target input to the current strategy's selector
-    const currentMethod = selectorMethodSelect.value || 'auto';
-    targetInput.value = selectors[currentMethod] || selectors.auto;
+    if (currentPickerStep) {
+      const targetInput = currentPickerStep.querySelector('.target');
+      const selectorMethodSelect = currentPickerStep.querySelector('.selector-method');
+      
+      // Store all selectors as data attributes on the step
+      currentPickerStep.dataset.selectorAuto = selectors.auto;
+      currentPickerStep.dataset.selectorQuerySelector = selectors.querySelector;
+      currentPickerStep.dataset.selectorXpath = selectors.xpath;
+      currentPickerStep.dataset.selectorText = selectors.text;
+      currentPickerStep.dataset.selectorPosition = selectors.position;
+      currentPickerStep.dataset.selectorCoordinates = selectors.coordinates;
+      currentPickerStep.dataset.selectorId = selectors.id;
+      currentPickerStep.dataset.selectorClass = selectors.class;
+      currentPickerStep.dataset.selectorAttribute = selectors.attribute;
+      currentPickerStep.dataset.iframeSelector = selectors.iframe || '';
+      
+      // Set the target input to the current strategy's selector
+      const currentMethod = selectorMethodSelect.value || 'auto';
+      targetInput.value = selectors[currentMethod] || selectors.auto;
+      
+      // Update summary
+      const actionSelect = currentPickerStep.querySelector('.action');
+      updateStepSummary(currentPickerStep, actionSelect.value, targetInput.value);
+    }
     
-    // Update summary
-    const actionSelect = currentPickerStep.querySelector('.action');
-    updateStepSummary(currentPickerStep, actionSelect.value, targetInput.value);
-  }
-  
-  stopElementPicker();
-  showStatus('✓ Element selected', 'success');
+    stopElementPicker();
+    showStatus('✓ Element selected', 'success');
+  }).catch(err => {
+    console.error('Error selecting element:', err);
+    showStatus('Error selecting element', 'error');
+  });
 }
 
 function handlePickerKeyDown(e) {
@@ -2135,7 +2216,7 @@ function handlePickerKeyDown(e) {
   }
 }
 
-function getElementUnderCursor(e) {
+async function getElementUnderCursor(e) {
   // Temporarily hide our UI elements
   const uiElements = [pickerOverlay, highlightBox, pickerTooltip, bubble, panel];
   const originalDisplay = uiElements.map(el => el ? el.style.display : null);
@@ -2149,7 +2230,7 @@ function getElementUnderCursor(e) {
     try {
       const iframeDoc = element.contentDocument || element.contentWindow.document;
       if (iframeDoc) {
-        // Get coordinates relative to iframe
+        // Same-origin iframe - can access directly
         const iframeRect = element.getBoundingClientRect();
         const iframeX = e.clientX - iframeRect.left;
         const iframeY = e.clientY - iframeRect.top;
@@ -2163,15 +2244,115 @@ function getElementUnderCursor(e) {
         }
       }
     } catch (err) {
-      // Cross-origin iframe - can't access content
-      console.warn('Cannot access iframe content (cross-origin):', err.message);
+      // Cross-origin iframe - use postMessage to get element info
+      const iframe = element; // Capture iframe reference before creating virtual element
+      const iframeRect = iframe.getBoundingClientRect();
+      const iframeX = e.clientX - iframeRect.left;
+      const iframeY = e.clientY - iframeRect.top;
+      
+      try {
+        const elementInfo = await getElementFromCrossOriginIframe(iframe, iframeX, iframeY);
+        if (elementInfo && elementInfo.found) {
+          // Create a virtual element object with the cross-origin element info
+          const virtualElement = {
+            tagName: elementInfo.tagName.toUpperCase(),
+            id: elementInfo.id || '',
+            className: elementInfo.className || '',
+            textContent: elementInfo.text || '',
+            _isCrossOriginElement: true,
+            _crossOriginIframe: iframe,
+            _crossOriginSelectors: elementInfo.selectors,
+            _crossOriginRect: elementInfo.rect,
+            getBoundingClientRect: function() {
+              // Return rect relative to main page
+              const iframeRect = iframe.getBoundingClientRect();
+              return {
+                left: iframeRect.left + elementInfo.rect.left,
+                top: iframeRect.top + elementInfo.rect.top,
+                width: elementInfo.rect.width,
+                height: elementInfo.rect.height,
+                right: iframeRect.left + elementInfo.rect.left + elementInfo.rect.width,
+                bottom: iframeRect.top + elementInfo.rect.top + elementInfo.rect.height
+              };
+            },
+            // Add stub methods to prevent errors
+            hasAttribute: function() { return false; },
+            getAttribute: function() { return null; },
+            parentElement: null,
+            children: [],
+            previousElementSibling: null,
+            nextElementSibling: null
+          };
+          element = virtualElement;
+        }
+      } catch (crossOriginErr) {
+        console.warn('Failed to get element from cross-origin iframe:', crossOriginErr);
+        // Fall back to just selecting the iframe itself
+      }
     }
   }
   
   // Restore UI elements
-  uiElements.forEach((el, i) => { if (el) el.style.display = originalDisplay[i] || ''; });
+  uiElements.forEach((el, i) => { 
+    if (el) {
+      // Restore original display, or use 'block' for highlight box
+      if (el === highlightBox) {
+        el.style.display = 'block';
+      } else {
+        el.style.display = originalDisplay[i] || ''; 
+      }
+    }
+  });
   
   return element;
+}
+
+/**
+ * Get element info from cross-origin iframe using postMessage
+ */
+async function getElementFromCrossOriginIframe(iframe, x, y) {
+  return new Promise((resolve, reject) => {
+    const commandId = 'picker-' + Date.now() + '-' + Math.random();
+    const timeout = setTimeout(() => {
+      window.removeEventListener('message', messageHandler);
+      console.warn('Timeout waiting for cross-origin iframe response', {iframe, x, y});
+      reject(new Error('Timeout waiting for cross-origin iframe response'));
+    }, 2000); // Increased timeout to 2 seconds
+
+    function messageHandler(event) {
+      if (event.data?.type === 'autobrowse-response' && event.data?.commandId === commandId) {
+        clearTimeout(timeout);
+        window.removeEventListener('message', messageHandler);
+        
+        console.log('Received cross-origin element info:', event.data);
+        
+        if (event.data.success) {
+          resolve(event.data.result);
+        } else {
+          reject(new Error(event.data.error || 'Unknown error'));
+        }
+      }
+    }
+
+    window.addEventListener('message', messageHandler);
+
+    // Send command to iframe
+    try {
+      console.log('Sending getElementAtPoint to cross-origin iframe:', {x, y, commandId});
+      iframe.contentWindow.postMessage({
+        type: 'autobrowse-command',
+        action: 'getElementAtPoint',
+        commandId: commandId,
+        x: x,
+        y: y
+      }, '*');
+    } catch (err) {
+      clearTimeout(timeout);
+      window.removeEventListener('message', messageHandler);
+      console.error('Failed to send message to iframe:', err);
+      reject(err);
+    }
+  });
 }
 
 function generateSelector(element) {
@@ -2235,6 +2416,39 @@ function generateSelector(element) {
 }
 
 function generateAllSelectors(element, clickX = null, clickY = null) {
+  // Handle cross-origin iframe elements
+  if (element._isCrossOriginElement) {
+    const iframe = element._crossOriginIframe;
+    const iframeSelector = iframe ? generateSelector(iframe) : null;
+    const crossOriginSelectors = element._crossOriginSelectors || {};
+    
+    // Get coordinates for the element within the cross-origin iframe
+    const iframeRect = iframe.getBoundingClientRect();
+    const elementRect = element._crossOriginRect || {};
+    
+    let coords;
+    if (clickX !== null && clickY !== null) {
+      coords = `${clickX},${clickY}`;
+    } else {
+      const x = Math.round(iframeRect.left + elementRect.left + (elementRect.width || 0) / 2);
+      const y = Math.round(iframeRect.top + elementRect.top + (elementRect.height || 0) / 2);
+      coords = `${x},${y}`;
+    }
+    
+    return {
+      auto: crossOriginSelectors.querySelector || crossOriginSelectors.id || '',
+      querySelector: crossOriginSelectors.querySelector || '',
+      xpath: crossOriginSelectors.xpath || '',
+      text: crossOriginSelectors.text || '',
+      position: crossOriginSelectors.querySelector || '',
+      coordinates: coords,
+      id: crossOriginSelectors.id || '',
+      class: crossOriginSelectors.querySelector || '',
+      attribute: crossOriginSelectors.querySelector || '',
+      iframe: iframeSelector
+    };
+  }
+  
   // Check if element is inside an iframe
   const iframe = element._parentIframe || null;
   const iframeSelector = iframe ? generateSelector(iframe) : null;

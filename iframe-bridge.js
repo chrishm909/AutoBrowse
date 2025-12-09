@@ -73,6 +73,10 @@
           result = await waitForElement(data.selector, data.timeout, data.method);
           break;
           
+        case 'getElementAtPoint':
+          result = await getElementAtPoint(data.x, data.y);
+          break;
+          
         default:
           throw new Error('Unknown action: ' + data.action);
       }
@@ -135,13 +139,8 @@
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await wait(300);
     
-    // Click
+    // Click the element
     element.click();
-    
-    // Also dispatch events for better compatibility
-    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     
     return { clicked: true };
   }
@@ -231,34 +230,104 @@
    * Get element from selector
    */
   async function getElementFromSelector(selector, method) {
+    console.log('[IframeBridge] getElementFromSelector:', { selector, method });
     let element = null;
     
     if (method === 'css' || method === 'auto') {
-      element = document.querySelector(selector);
-      if (element) return element;
+      try {
+        element = document.querySelector(selector);
+        if (element) {
+          console.log('[IframeBridge] Found via CSS:', element);
+          return element;
+        }
+      } catch (e) {
+        console.log('[IframeBridge] CSS selector failed:', e.message);
+      }
     }
     
     if (method === 'xpath' || (method === 'auto' && (selector.startsWith('/') || selector.startsWith('(')))) {
-      const result = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      element = result.singleNodeValue;
-      if (element) return element;
+      try {
+        const result = document.evaluate(selector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        element = result.singleNodeValue;
+        if (element) {
+          console.log('[IframeBridge] Found via XPath:', element);
+          return element;
+        }
+      } catch (e) {
+        console.log('[IframeBridge] XPath failed:', e.message);
+      }
     }
     
     if (method === 'text' || method === 'auto') {
+      console.log('[IframeBridge] Trying text search for:', selector);
       element = findByText(selector);
-      if (element) return element;
+      if (element) {
+        console.log('[IframeBridge] Found via text:', element);
+        return element;
+      } else {
+        console.log('[IframeBridge] Text search found nothing');
+      }
     }
     
     throw new Error('Element not found: ' + selector);
   }
 
   /**
-   * Find element by text content
+   * Find element by text content (exact match with priority search)
    */
   function findByText(text) {
-    const xpath = `//*[contains(text(), "${text}")]`;
-    const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    return result.singleNodeValue;
+    console.log('[IframeBridge] findByText called with:', text);
+    
+    // Helper to extract direct text content (same as during picking)
+    const getDirectText = (el) => {
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        return el.value || el.placeholder || '';
+      }
+      // Clone and remove children to get only direct text
+      const clone = el.cloneNode(true);
+      Array.from(clone.children).forEach(child => child.remove());
+      return clone.textContent?.trim() || '';
+    };
+
+    // Priority 1: Exact match on clickable elements (buttons, links)
+    const clickable = document.querySelectorAll('button, a, input[type="submit"], input[type="button"]');
+    console.log('[IframeBridge] Checking', clickable.length, 'clickable elements');
+    for (const el of clickable) {
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      console.log('[IframeBridge] Clickable element texts:', { directText, fullText, searchText: text });
+      if (directText === text || fullText === text) {
+        console.log('[IframeBridge] MATCH found in clickable:', el);
+        return el;
+      }
+    }
+
+    // Priority 2: Exact match on interactive elements
+    const interactive = document.querySelectorAll('label, span[onclick], div[onclick], [role="button"]');
+    console.log('[IframeBridge] Checking', interactive.length, 'interactive elements');
+    for (const el of interactive) {
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      if (directText === text || fullText === text) {
+        console.log('[IframeBridge] MATCH found in interactive:', el);
+        return el;
+      }
+    }
+
+    // Priority 3: Exact match on any element
+    const all = document.querySelectorAll('button, a, span, div, p, h1, h2, h3, h4, h5, h6, label, li, td, th, input');
+    console.log('[IframeBridge] Checking', all.length, 'general elements');
+    for (const el of all) {
+      const directText = getDirectText(el);
+      const fullText = el.textContent?.trim() || '';
+      if (directText === text || fullText === text) {
+        console.log('[IframeBridge] MATCH found in general:', el);
+        return el;
+      }
+    }
+
+    console.log('[IframeBridge] No match found for text:', text);
+    return null;
   }
 
   /**
@@ -292,6 +361,143 @@
            style.opacity !== '0' &&
            element.offsetWidth > 0 && 
            element.offsetHeight > 0;
+  }
+
+  /**
+   * Get element at specific coordinates (for element picker)
+   */
+  async function getElementAtPoint(x, y) {
+    const element = document.elementFromPoint(x, y);
+    
+    if (!element) {
+      return { found: false };
+    }
+
+    // Extract direct text content (same method used in content.js for consistency)
+    let directText = '';
+    if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+      directText = element.value || element.placeholder || '';
+    } else {
+      // Clone and remove children to get only direct text
+      const clone = element.cloneNode(true);
+      Array.from(clone.children).forEach(child => child.remove());
+      directText = clone.textContent?.trim() || element.textContent?.trim() || '';
+    }
+
+    // Generate multiple selector options
+    const selectors = {
+      id: element.id ? '#' + CSS.escape(element.id) : null,
+      querySelector: generateQuerySelector(element),
+      xpath: generateXPath(element),
+      text: directText.substring(0, 200) || null  // Store more text for better matching
+    };
+
+    // Get element information
+    const rect = element.getBoundingClientRect();
+    const info = {
+      found: true,
+      tagName: element.tagName.toLowerCase(),
+      id: element.id,
+      className: element.className,
+      text: directText.substring(0, 100),
+      selectors: selectors,
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height
+      }
+    };
+
+    return info;
+  }
+
+  /**
+   * Generate a CSS selector for an element
+   */
+  function generateQuerySelector(element) {
+    // Try ID first
+    if (element.id) {
+      return '#' + CSS.escape(element.id);
+    }
+
+    // Try unique class combination
+    if (element.className && typeof element.className === 'string') {
+      const classes = element.className.trim().split(/\s+/).filter(c => c);
+      if (classes.length > 0) {
+        const classSelector = '.' + classes.map(c => CSS.escape(c)).join('.');
+        if (document.querySelectorAll(classSelector).length === 1) {
+          return classSelector;
+        }
+      }
+    }
+
+    // Build path from element to body
+    const path = [];
+    let current = element;
+    while (current && current !== document.body) {
+      let selector = current.tagName.toLowerCase();
+      
+      if (current.id) {
+        selector += '#' + CSS.escape(current.id);
+        path.unshift(selector);
+        break;
+      }
+
+      if (current.className && typeof current.className === 'string') {
+        const classes = current.className.trim().split(/\s+/).filter(c => c);
+        if (classes.length > 0) {
+          selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+        }
+      }
+
+      // Add nth-child if needed for uniqueness
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(el => el.tagName === current.tagName);
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          selector += `:nth-child(${index})`;
+        }
+      }
+
+      path.unshift(selector);
+      current = parent;
+    }
+
+    return path.join(' > ');
+  }
+
+  /**
+   * Generate XPath for an element
+   */
+  function generateXPath(element) {
+    if (element.id) {
+      return `//*[@id="${element.id}"]`;
+    }
+
+    const path = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      let index = 0;
+      let sibling = current.previousSibling;
+
+      while (sibling) {
+        if (sibling.nodeType === Node.ELEMENT_NODE && sibling.tagName === current.tagName) {
+          index++;
+        }
+        sibling = sibling.previousSibling;
+      }
+
+      const tagName = current.tagName.toLowerCase();
+      const xpathIndex = index > 0 ? `[${index + 1}]` : '';
+      path.unshift(`${tagName}${xpathIndex}`);
+
+      current = current.parentElement;
+    }
+
+    return '/' + path.join('/');
   }
 
   /**
